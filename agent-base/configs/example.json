@@ -1,0 +1,9 @@
+{
+  "agentId": "agent-live-01",
+  "agentName": "native-baseline-live",
+  "memoryVariant": "native-0d",
+  "mode": "eval",
+  "farmDashboardUrl": "http://localhost:3847",
+  "workspaceDir": "/tmp/clawfarm/workspaces/agent-live-01",
+  "port": 3900
+}

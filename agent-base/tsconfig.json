@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "paths": {
+      "@openclaw/*": ["../../openclaw/src/*"],
+      "@farm/*": ["../farm/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "ts-node": {
+    "esm": true
+  }
+}

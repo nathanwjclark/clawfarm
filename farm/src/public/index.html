@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clawfarm Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1><a href="#/">Clawfarm</a> <span id="mode-badge" class="mode-badge"></span></h1>
+      <nav id="nav">
+        <a href="#/" class="nav-link active" data-tab="dashboard">Dashboard</a>
+        <a href="#/cost" class="nav-link" data-tab="cost">Cost</a>
+        <a href="#/evals" class="nav-link" data-tab="evals">Evals</a>
+        <a href="#/matrix" class="nav-link" data-tab="matrix">Matrix</a>
+        <a href="#/variants" class="nav-link" data-tab="variants">Variants</a>
+      </nav>
+    </div>
+    <div class="header-right">
+      <div id="sim-controls" class="sim-controls">
+        <span class="sim-label">E2E Sim</span>
+        <button id="sim-start-btn" class="sim-btn sim-start" onclick="handleSimStart()">Start</button>
+        <button id="sim-stop-btn" class="sim-btn sim-pause" onclick="handleSimStop()" disabled>Pause</button>
+        <button id="sim-reset-btn" class="sim-btn sim-reset" onclick="handleSimReset()">Reset</button>
+        <span id="sim-status" class="sim-status-text">idle</span>
+        <span id="sim-progress" class="sim-progress-text"></span>
+      </div>
+      <button id="stop-all-btn" class="stop-all-btn" onclick="handleStopAll()">Stop All</button>
+    </div>
+  </header>
+  <main id="content"></main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+import { describe, it, expect } from "vitest";
+import { createMemoryBackend } from "../src/memory/backend-factory.js";
+import { NativeBackend } from "../src/memory/native-backend.js";
+import type { AgentBaseConfig } from "../src/config.js";
+
+const baseConfig: AgentBaseConfig = {
+  agentId: "test",
+  agentName: "Test",
+  memoryVariant: "native-0d",
+  mode: "eval",
+  farmDashboardUrl: "http://localhost:3847",
+  reportIntervalMs: 5000,
+  workspaceDir: "/tmp/test",
+  provider: "anthropic",
+  model: "claude-sonnet-4-20250514",
+  pricing: {
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+  },
+  costCap: { perEvalRunUsd: 10, totalUsd: 100 },
+  port: 0,
+  contextTokensAvailable: 200_000,
+};
+
+describe("createMemoryBackend", () => {
+  it("creates NativeBackend for native-0d", () => {
+    const backend = createMemoryBackend("native-0d", baseConfig);
+    expect(backend).toBeInstanceOf(NativeBackend);
+    expect(backend.variantId).toBe("native-0d");
+    expect(backend.dimensionality).toBe("0D");
+  });
+
+  it("creates NativeBackend for native-0d-tuned", () => {
+    const config = { ...baseConfig, memoryVariant: "native-0d-tuned" };
+    const backend = createMemoryBackend("native-0d-tuned", config);
+    expect(backend).toBeInstanceOf(NativeBackend);
+  });
+
+  it("throws for unimplemented variants", () => {
+    for (const variant of [
+      "mem0-1d",
+      "mem0-1d-aggressive",
+      "cognee-2d",
+      "graphiti-2d+",
+      "diy-cron-1d",
+      "learned-index",
+    ]) {
+      expect(() => createMemoryBackend(variant, baseConfig)).toThrow(
+        `Memory variant "${variant}" not yet implemented`,
+      );
+    }
+  });
+
+  it("throws for unknown variants", () => {
+    expect(() => createMemoryBackend("foo-bar", baseConfig)).toThrow(
+      'Unknown memory variant: "foo-bar"',
+    );
+  });
+});

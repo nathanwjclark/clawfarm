@@ -1,0 +1,12 @@
+{
+  "name": "clawfarm",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["farm", "agent-base"],
+  "scripts": {
+    "dev": "npm run dev --workspace=farm",
+    "test": "npm run test --workspace=farm && npm run test --workspace=agent-base",
+    "test:farm": "npm run test --workspace=farm",
+    "test:agent": "npm run test --workspace=agent-base"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+farm/logs/
+farm/data/
+.workspaces/
+agent-base/.workspaces/
+planning/memoryconversation.txt
