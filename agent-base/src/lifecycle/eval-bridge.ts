@@ -162,8 +162,10 @@ export class EvalBridge {
 
     try {
       await new Promise<void>((resolve, reject) => {
+        // Run from the eval's own directory so npx can find its node_modules
+        const spawnCwd = evalDir || evalWorkspace;
         this.childProcess = spawn(evalDef.command, resolvedArgs, {
-          cwd: evalWorkspace,
+          cwd: spawnCwd,
           env: { ...process.env },
           stdio: ["ignore", "pipe", "pipe"],
         });

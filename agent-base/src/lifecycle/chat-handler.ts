@@ -304,8 +304,41 @@ export class ChatHandler {
         }
 
         try {
-          // stdout may contain the JSON result even if exit code was non-zero
-          const result = JSON.parse(stdout) as AgentCliResult;
+          // stdout may contain non-JSON lines before the JSON envelope
+          // (e.g. ANSI-colored "[plugins] vending-bench: registered 14 tools").
+          // The JSON envelope may be pretty-printed (multi-line).
+          // Strategy: strip ANSI codes, find the first '{' that starts a JSON object,
+          // then parse from there to the end.
+          const clean = stdout.replace(/\x1b\[[0-9;]*m/g, ""); // strip ANSI
+          let result: AgentCliResult | null = null;
+
+          // Try parsing the whole output first
+          try {
+            result = JSON.parse(clean) as AgentCliResult;
+          } catch {
+            // Find the first top-level '{' that starts the JSON envelope
+            const jsonStart = clean.indexOf("\n{");
+            if (jsonStart >= 0) {
+              try {
+                result = JSON.parse(clean.slice(jsonStart + 1)) as AgentCliResult;
+              } catch {
+                // Try from the very first '{'
+                const firstBrace = clean.indexOf("{");
+                if (firstBrace >= 0) {
+                  try {
+                    result = JSON.parse(clean.slice(firstBrace)) as AgentCliResult;
+                  } catch {
+                    // give up
+                  }
+                }
+              }
+            }
+          }
+
+          if (!result) {
+            reject(new Error(`Failed to parse openclaw output: ${stdout.slice(0, 500)}`));
+            return;
+          }
           if (result.meta?.error) {
             reject(new Error(`Agent error (${result.meta.error.kind}): ${result.meta.error.message}`));
             return;

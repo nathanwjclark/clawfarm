@@ -5,5 +5,7 @@
   "mode": "eval",
   "farmDashboardUrl": "http://localhost:3847",
   "workspaceDir": "/tmp/clawfarm/workspaces/agent-live-01",
-  "port": 3900
+  "port": 3900,
+  "openclawDir": "/Users/nathanclark/claude-projects/openclaw",
+  "externalEvalDirs": ["/Users/nathanclark/claude-projects/vending-bench"]
 }
