@@ -41,7 +41,7 @@ Each agent variant uses the same OpenClaw engine with a different memory backend
 
 Evals are external processes that communicate with agents via HTTP. Currently supported:
 
-- [**vending-bench**](https://github.com/nathanwjclark/vending-bench) — 365-day vending machine business simulation
+- [**vending-bench-clone**](https://github.com/nathanwjclark/vending-bench-clone) — 365-day vending machine business simulation
 - **constraint-propagation** — scripted message-scoring eval
 
 ## Testing
