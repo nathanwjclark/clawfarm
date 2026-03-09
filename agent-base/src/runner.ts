@@ -63,6 +63,16 @@ async function main() {
   const rawConfig = JSON.parse(await fs.readFile(configPath, "utf-8"));
   const config = parseConfig(rawConfig);
 
+  // Resolve relative paths in config against the config file's directory
+  // (e.g. "../../../openclaw" from agent-base/configs/ → ~/claude-projects/openclaw)
+  const configDir = path.dirname(configPath);
+  const resolvePath = (p: string) => path.isAbsolute(p) ? p : path.resolve(configDir, p);
+  if (config.openclawDir) config.openclawDir = resolvePath(config.openclawDir);
+  if (config.externalEvalDirs) {
+    config.externalEvalDirs = config.externalEvalDirs.map(resolvePath);
+  }
+  config.workspaceDir = resolvePath(config.workspaceDir);
+
   // Ensure workspace dir exists
   await fs.mkdir(config.workspaceDir, { recursive: true });
 

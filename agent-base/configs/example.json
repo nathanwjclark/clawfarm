@@ -6,6 +6,6 @@
   "farmDashboardUrl": "http://localhost:3847",
   "workspaceDir": "/tmp/clawfarm/workspaces/agent-live-01",
   "port": 3900,
-  "openclawDir": "../openclaw",
-  "externalEvalDirs": ["../vending-bench"]
+  "openclawDir": "../../../openclaw",
+  "externalEvalDirs": ["../../../vending-bench"]
 }
