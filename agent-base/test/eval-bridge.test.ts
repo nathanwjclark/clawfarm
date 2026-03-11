@@ -73,6 +73,15 @@ function makeMockChatHandler() {
   } as unknown as ChatHandler;
 }
 
+function makeMockBackend() {
+  return {
+    reset: vi.fn().mockResolvedValue(undefined),
+    init: vi.fn().mockResolvedValue(undefined),
+    generateOpenclawConfig: vi.fn(() => ({})),
+    captureSnapshot: vi.fn().mockResolvedValue({ files: [], stats: {} }),
+  } as any;
+}
+
 async function setupPreflightEnv(tmpDir: string, evalId: string): Promise<{ openclawDir: string; evalDir: string }> {
   const openclawDir = path.join(tmpDir, "fake-openclaw");
   await fs.mkdir(openclawDir, { recursive: true });
@@ -112,7 +121,8 @@ describe("EvalBridge", () => {
     const monitor = makeMockMonitor();
     const reporter = makeMockReporter();
     const chatHandler = makeMockChatHandler();
-    const bridge = new EvalBridge(config, monitor, reporter, chatHandler);
+    const backend = makeMockBackend();
+    const bridge = new EvalBridge(config, monitor, reporter, chatHandler, backend);
 
     expect(bridge.isRunning()).toBe(false);
 
@@ -122,14 +132,14 @@ describe("EvalBridge", () => {
       description: "test",
       category: "simulation",
       command: "echo",
-      args: ["Day 1/5 Net Worth: $100"],
+      args: ["Day 1/5 Total Assets: $100"],
       defaultDays: 5,
       maxScore: -1,
-      progressPattern: /Day (\d+)\/(\d+).*Net Worth: \$([0-9.,-]+)/,
+      progressPattern: /Day (\d+)\/(\d+).*Total Assets: \$([0-9.,-]+)/,
       resultExtractor: async () => ({
         score: 100,
         maxScore: -1,
-        taskResults: { netWorth: 100 },
+        taskResults: { totalAssets: 100 },
         costUsd: 0.5,
         durationMs: 1000,
       }),
@@ -153,7 +163,8 @@ describe("EvalBridge", () => {
     const monitor = makeMockMonitor();
     const reporter = makeMockReporter();
     const chatHandler = makeMockChatHandler();
-    const bridge = new EvalBridge(config, monitor, reporter, chatHandler);
+    const backend = makeMockBackend();
+    const bridge = new EvalBridge(config, monitor, reporter, chatHandler, backend);
 
     const evalDef: ExternalEvalDefinition = {
       id: "url-test",
@@ -181,7 +192,8 @@ describe("EvalBridge", () => {
     const monitor = makeMockMonitor();
     const reporter = makeMockReporter();
     const chatHandler = makeMockChatHandler();
-    const bridge = new EvalBridge(config, monitor, reporter, chatHandler);
+    const backend = makeMockBackend();
+    const bridge = new EvalBridge(config, monitor, reporter, chatHandler, backend);
 
     const evalDef: ExternalEvalDefinition = {
       id: "transcript-test",
@@ -201,7 +213,7 @@ describe("EvalBridge", () => {
         return {
           score: raw.net,
           maxScore: -1,
-          taskResults: { netWorth: raw.net },
+          taskResults: { totalAssets: raw.net },
           costUsd: 0,
           durationMs: 0,
         };
@@ -220,7 +232,8 @@ describe("EvalBridge", () => {
     const monitor = makeMockMonitor();
     const reporter = makeMockReporter();
     const chatHandler = makeMockChatHandler();
-    const bridge = new EvalBridge(config, monitor, reporter, chatHandler);
+    const backend = makeMockBackend();
+    const bridge = new EvalBridge(config, monitor, reporter, chatHandler, backend);
 
     const evalDef: ExternalEvalDefinition = {
       id: "slow-test",

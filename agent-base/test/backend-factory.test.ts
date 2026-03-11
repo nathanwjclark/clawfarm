@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createMemoryBackend } from "../src/memory/backend-factory.js";
-import { NativeBackend } from "../src/memory/native-backend.js";
+import { NativeBackend } from "../src/memory/variants/native/backend.js";
+import { FiveDayBackend } from "../src/memory/variants/five-day/backend.js";
 import type { AgentBaseConfig } from "../src/config.js";
 
 const baseConfig: AgentBaseConfig = {
@@ -36,6 +37,13 @@ describe("createMemoryBackend", () => {
     const config = { ...baseConfig, memoryVariant: "native-0d-tuned" };
     const backend = createMemoryBackend("native-0d-tuned", config);
     expect(backend).toBeInstanceOf(NativeBackend);
+  });
+
+  it("creates FiveDayBackend for five-day-1d", () => {
+    const config = { ...baseConfig, memoryVariant: "five-day-1d" };
+    const backend = createMemoryBackend("five-day-1d", config);
+    expect(backend).toBeInstanceOf(FiveDayBackend);
+    expect(backend.dimensionality).toBe("1D");
   });
 
   it("throws for unimplemented variants", () => {

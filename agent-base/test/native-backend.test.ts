@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { NativeBackend } from "../src/memory/native-backend.js";
+import { NativeBackend } from "../src/memory/variants/native/backend.js";
 import type { AgentBaseConfig } from "../src/config.js";
 
 describe("NativeBackend", () => {
@@ -45,9 +45,29 @@ describe("NativeBackend", () => {
     expect(backend.dimensionality).toBe("0D");
   });
 
-  it("recall returns empty string (native handles memory)", async () => {
-    const result = await backend.recall([]);
-    expect(result).toBe("");
+  it("recall injects stored memory and recent notes", async () => {
+    await fs.writeFile(
+      path.join(tmpDir, "MEMORY.md"),
+      "# Memory\n\n## Preferences\n\nPrefers exact supplier names.",
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "memory", "2026-03-09.md"),
+      "Confirmed supplier shortlist with QuickStock and Bay Area Wholesale.",
+    );
+
+    const result = await backend.recall([
+      {
+        id: "1",
+        timestamp: new Date().toISOString(),
+        role: "user",
+        content: "What did we decide about QuickStock?",
+        tokenCount: 10,
+      },
+    ]);
+
+    expect(result).toContain("Stored Memory");
+    expect(result).toContain("Recent Daily Notes");
+    expect(result).toContain("QuickStock");
   });
 
   it("consolidate is a no-op", async () => {
@@ -125,8 +145,10 @@ describe("NativeBackend", () => {
   it("generateOpenclawConfig produces config with workspace path", () => {
     const config = backend.generateOpenclawConfig("/some/workspace");
     const agents = config.agents as any;
+    const memory = config.memory as any;
     expect(agents.defaults.workspace).toBe("/some/workspace");
     expect(agents.defaults.skipBootstrap).toBe(true);
     expect(agents.defaults.memorySearch.enabled).toBe(true);
+    expect(memory.backend).toBe("external");
   });
 });

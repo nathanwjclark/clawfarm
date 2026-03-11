@@ -60,6 +60,35 @@ export interface EvalRun {
     score?: number;
   };
   runMetrics?: RunMetrics;
+  /** Profiling timing summary (persisted, available after completion). */
+  profilingSummary?: {
+    days: Array<{
+      day: number;
+      wallMs: number;
+      chatHandlerMs: number;
+      openclawMs: number;
+      bootstrapMs: number;
+      llmApiMs: number;
+      toolExecMs: number;
+    }>;
+    avg: {
+      wallMs: number;
+      chatHandlerMs: number;
+      openclawMs: number;
+      bootstrapMs: number;
+      llmApiMs: number;
+      toolExecMs: number;
+    };
+    firstDay?: {
+      day: number;
+      wallMs: number;
+      chatHandlerMs: number;
+      openclawMs: number;
+      bootstrapMs: number;
+      llmApiMs: number;
+      toolExecMs: number;
+    };
+  };
 }
 
 /** Operational metrics captured during an eval run. */

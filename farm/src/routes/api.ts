@@ -12,9 +12,10 @@ import { simStart, simStop, simReset, simGetStatus } from "../sim-runner.js";
 import { logAction, queryLogs, getLogFiles } from "../logger.js";
 import { registerAgent, updateHeartbeat, isAgentLive, getAllRegisteredAgents, getAgentNameById } from "../agent-registry.js";
 import { getFarmMode, includeLiveAgents, includeMockData } from "../farm-mode.js";
-import { storeEvalResult, storeEvalMetadata, storeEvalProgress } from "../eval-store.js";
+import { storeEvalResult, storeEvalMetadata, storeEvalProgress, getProgressHistory, getChartHistory, getRunProfile, getAllEvalRuns } from "../eval-store.js";
 import type { AgentStatus } from "../types.js";
 import type { EvalMetadata } from "../eval-store.js";
+import { discoverAgentConfigs, spawnAgent, getSpawnedAgents } from "../agent-spawner.js";
 
 // Track clockSpeed from eval start requests so we can attach it to results
 const evalClockSpeeds = new Map<string, "fast" | "real-world" | "custom">();
@@ -27,6 +28,30 @@ router.get("/config", (_req, res) => {
 });
 
 // Agents
+
+// Spawner routes must come before /agents/:id to avoid matching "spawn"/"spawned" as an ID
+router.post("/agents/spawn", (req, res) => {
+  if (!includeLiveAgents()) {
+    res.status(404).json({ error: "Agent spawning not available in demo mode" });
+    return;
+  }
+  const { variantId } = req.body as { variantId?: string };
+  if (!variantId) {
+    res.status(400).json({ error: "variantId is required" });
+    return;
+  }
+  try {
+    const result = spawnAgent(variantId);
+    logAction("agent_spawn", { variantId, agentId: result.agentId, port: result.port, alreadyRunning: result.alreadyRunning });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+router.get("/agents/spawned", (_req, res) => {
+  res.json(getSpawnedAgents());
+});
+
 router.get("/agents", (_req, res) => { res.json(getAgents()); });
 router.get("/agents/:id", (req, res) => {
   const agent = getAgent(req.params.id);
@@ -127,7 +152,7 @@ router.post("/agents/:id/eval-progress", (req, res) => {
     runId?: string;
     evalId?: string;
     memoryVariant?: string;
-    progress?: { current: number; total: number; label?: string; score?: number };
+    progress?: { current: number; total: number; label?: string; score?: number; costUsd?: number; elapsedMs?: number; memoryTokens?: number; turnProfile?: { wallMs: number; chatHandlerMs: number; openclawMs: number; bootstrapMs: number; llmApiMs: number; toolExecMs: number } };
   };
   if (!runId || !evalId || !progress) {
     res.status(400).json({ error: "runId, evalId, and progress are required" });
@@ -137,6 +162,47 @@ router.post("/agents/:id/eval-progress", (req, res) => {
   const clockSpeed = evalClockSpeeds.get(req.params.id) || "fast";
   storeEvalProgress(runId, req.params.id, evalId, memoryVariant ?? "", agentName, clockSpeed, progress);
   res.json({ ok: true });
+});
+
+// Progress history for charting — returns time-series data for all active eval runs
+router.get("/eval-progress-history", (_req, res) => {
+  res.json(getProgressHistory());
+});
+
+// Chart history — combines live progress + persisted checkpoints from recent completed runs
+// Use this for dashboard charts so they always show the most recent data
+router.get("/eval-chart-history", (_req, res) => {
+  res.json(getChartHistory());
+});
+
+// All eval runs (flat list for the Runs view)
+router.get("/eval-runs", (_req, res) => {
+  res.json(getAllEvalRuns(getAgentNameById, isAgentLive));
+});
+
+// Per-run profiling data (timing breakdown per day) — live from progress history
+router.get("/eval-runs/:runId/profile", (req, res) => {
+  const profile = getRunProfile(req.params.runId);
+  if (!profile) {
+    res.status(404).json({ error: "No profile data for this run" });
+    return;
+  }
+  res.json(profile);
+});
+
+// Per-run profiling summary (persisted, available after completion)
+router.get("/eval-runs/:runId/profiling-summary", (req, res) => {
+  const runs = getAllEvalRuns(getAgentNameById);
+  const run = runs.find((r) => r.id === req.params.runId);
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  if (!run.profilingSummary) {
+    res.status(404).json({ error: "No profiling data for this run" });
+    return;
+  }
+  res.json(run.profilingSummary);
 });
 
 router.post("/agents/:id/eval-result", (req, res) => {
@@ -182,11 +248,13 @@ router.post("/agents/:id/eval/preflight", async (req, res) => {
 
 // Eval trigger — start an eval on a live agent
 router.post("/agents/:id/eval/start", async (req, res) => {
-  const { evalId, clockSpeed, customDelayMs, days } = req.body as {
+  const { evalId, clockSpeed, customDelayMs, days, seed, resetMemory } = req.body as {
     evalId?: string;
     clockSpeed?: string;
     customDelayMs?: number;
     days?: number;
+    seed?: number;
+    resetMemory?: boolean;
   };
   if (!evalId) {
     res.status(400).json({ error: "evalId is required" });
@@ -209,7 +277,7 @@ router.post("/agents/:id/eval/start", async (req, res) => {
     const agentRes = await fetch(`${entry.baseUrl}/eval/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ evalId, clockSpeed, customDelayMs, days }),
+      body: JSON.stringify({ evalId, clockSpeed, customDelayMs, days, seed, resetMemory }),
       signal: AbortSignal.timeout(10_000),
     });
     const data = await agentRes.json();
@@ -221,6 +289,56 @@ router.post("/agents/:id/eval/start", async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// SSE proxy for streaming eval logs from a live agent
+router.get("/agents/:id/eval/logs", async (req, res) => {
+  if (!isAgentLive(req.params.id)) {
+    res.status(404).json({ error: "Agent is not live" });
+    return;
+  }
+  const registry = getAllRegisteredAgents();
+  const entry = registry.get(req.params.id);
+  if (!entry) {
+    res.status(404).json({ error: "Agent not registered" });
+    return;
+  }
+
+  // Pipe SSE from agent to client
+  try {
+    const agentRes = await fetch(`${entry.baseUrl}/eval/logs`);
+    if (!agentRes.ok || !agentRes.body) {
+      res.status(502).json({ error: "Could not connect to agent log stream" });
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const reader = agentRes.body.getReader();
+    const decoder = new TextDecoder();
+
+    const pump = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(decoder.decode(value, { stream: true }));
+        }
+      } catch {}
+      res.end();
+    };
+    pump();
+
+    req.on("close", () => {
+      reader.cancel().catch(() => {});
+    });
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
   }
 });
 
@@ -301,6 +419,14 @@ router.post("/stop-all", async (_req, res) => {
   }
   logAction("stop_all", { source: "dashboard", results: stopResults });
   res.json({ success: true, results: stopResults });
+});
+
+// ---------------------------------------------------------------------------
+// Agent spawner — config discovery
+// ---------------------------------------------------------------------------
+
+router.get("/agent-configs", (_req, res) => {
+  res.json(discoverAgentConfigs());
 });
 
 // ---------------------------------------------------------------------------

@@ -120,14 +120,14 @@ describe("ExternalEvalRunner", () => {
       description: "test",
       category: "simulation",
       command: "echo",
-      args: ["Day 1/5 Net Worth: $100"],
+      args: ["Day 1/5 Total Assets: $100"],
       defaultDays: 5,
       maxScore: -1,
-      progressPattern: /Day (\d+)\/(\d+).*Net Worth: \$([0-9.,-]+)/,
+      progressPattern: /Day (\d+)\/(\d+).*Total Assets: \$([0-9.,-]+)/,
       resultExtractor: async () => ({
         score: 100,
         maxScore: -1,
-        taskResults: { netWorth: 100 },
+        taskResults: { totalAssets: 100 },
         costUsd: 0.5,
         durationMs: 1000,
       }),
@@ -165,14 +165,14 @@ describe("ExternalEvalRunner", () => {
       description: "test",
       category: "simulation",
       command: "bash",
-      args: ["-c", 'printf "Day 1/10 Net Worth: \\$500\\n"; printf "Day 10/10 Net Worth: \\$2500\\n"'],
+      args: ["-c", 'printf "Day 1/10 Total Assets: \\$500\\n"; printf "Day 10/10 Total Assets: \\$2500\\n"'],
       defaultDays: 10,
       maxScore: -1,
-      progressPattern: /Day (\d+)\/(\d+).*Net Worth: \$([0-9.,-]+)/,
+      progressPattern: /Day (\d+)\/(\d+).*Total Assets: \$([0-9.,-]+)/,
       resultExtractor: async () => ({
         score: 2500,
         maxScore: -1,
-        taskResults: { netWorth: 2500 },
+        taskResults: { totalAssets: 2500 },
         costUsd: 1.0,
         durationMs: 5000,
       }),
@@ -234,7 +234,7 @@ describe("ExternalEvalRunner", () => {
       command: "bash",
       args: [
         "-c",
-        `echo '{"scoreBreakdown":{"netWorth":3500,"bankBalance":2000,"machineCash":500},"cost":{"estimatedCostUsd":1.5},"durationMs":10000}' > {logDir}/run-001-transcript.json`,
+        `echo '{"scoreBreakdown":{"totalAssets":3500,"bankBalance":2000,"machineCash":500},"cost":{"estimatedCostUsd":1.5},"durationMs":10000}' > {logDir}/run-001-transcript.json`,
       ],
       defaultDays: 5,
       maxScore: -1,
@@ -242,7 +242,7 @@ describe("ExternalEvalRunner", () => {
       resultExtractor: async (transcriptPath: string) => {
         const raw = JSON.parse(await fs.readFile(transcriptPath, "utf-8"));
         return {
-          score: raw.scoreBreakdown.netWorth,
+          score: raw.scoreBreakdown.totalAssets,
           maxScore: -1,
           taskResults: raw.scoreBreakdown,
           costUsd: raw.cost.estimatedCostUsd,
@@ -257,7 +257,7 @@ describe("ExternalEvalRunner", () => {
     expect(result.score).toBe(3500);
     expect(result.costUsd).toBe(1.5);
     expect(result.taskResults).toEqual({
-      netWorth: 3500,
+      totalAssets: 3500,
       bankBalance: 2000,
       machineCash: 500,
     });

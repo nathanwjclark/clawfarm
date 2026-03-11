@@ -2,7 +2,7 @@ import type { AgentStatus, EvalType, MemoryVariant, CostSnapshot, CostConfig, Ap
 import {
   getSimulatedAgents, getSimulatedAgent,
   getSimulatedEvalTypes, getSimulatedEvalType,
-  getSimulatedVariants, getSimulatedVariant,
+  getSimulatedVariants, getSimulatedVariant, getImplementedVariants,
   getSimulatedCostHistory, getSimulatedCostConfig, getSimulatedApiKeys,
   getSimulatedMemoryGraph, getSimulatedMessages,
   getSimulatedAgentEvalSummary,
@@ -143,7 +143,11 @@ function mergeEvalType(mock: EvalType, real: EvalType): EvalType {
 export function getVariants(): MemoryVariant[] {
   let result: MemoryVariant[] = [];
   if (includeMockData()) {
+    // Demo/dev: include all mock variants (which include implemented ones)
     result = [...getSimulatedVariants()];
+  } else {
+    // Prod: start with just the implemented variants (real backends)
+    result = getImplementedVariants().map((v) => ({ ...v }));
   }
   if (includeLiveAgents()) {
     const realPerf = getStoredVariantPerformance();
@@ -162,7 +166,7 @@ export function getVariants(): MemoryVariant[] {
         merged.agents = [...new Set([...merged.agents, ...liveAgentIds])];
         result[idx] = merged;
       } else {
-        // Real-only variant (prod mode)
+        // Unknown variant from eval-store — create stub
         result.push({
           id: variantId,
           name: variantId,

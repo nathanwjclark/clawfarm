@@ -6,8 +6,10 @@ import apiRouter from "./routes/api.js";
 import { logApiRequest, logSystem } from "./logger.js";
 import { setFarmMode, getFarmMode } from "./farm-mode.js";
 import { startCostAccumulator, stopCostAccumulator } from "./cost-accumulator.js";
-import { getLiveAgentCosts } from "./agent-registry.js";
+import { getLiveAgentCosts, getLiveAgentIds } from "./agent-registry.js";
 import { loadEvalStore } from "./eval-store.js";
+import { killAllSpawnedAgents } from "./agent-spawner.js";
+import { startSleepGuard, stopSleepGuard } from "./sleep-guard.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +50,7 @@ app.use(express.static(path.join(__dirname, "public")));
 if (getFarmMode() !== "demo") {
   loadEvalStore();
   startCostAccumulator(getLiveAgentCosts);
+  startSleepGuard(() => getLiveAgentIds().length > 0);
 }
 
 const server = app.listen(PORT, () => {
@@ -57,7 +60,9 @@ const server = app.listen(PORT, () => {
 
 // Graceful shutdown
 const shutdown = () => {
+  killAllSpawnedAgents();
   stopCostAccumulator();
+  stopSleepGuard();
   server.close();
 };
 process.on("SIGINT", shutdown);

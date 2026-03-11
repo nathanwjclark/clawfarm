@@ -114,6 +114,28 @@ export interface MemorySnapshot {
   graphState: AgentMemoryGraph;
 }
 
+export interface MemorySearchResult {
+  path: string;
+  startLine: number;
+  endLine: number;
+  score: number;
+  snippet: string;
+  source: "memory" | "sessions";
+  citation?: string;
+}
+
+export interface MemoryReadResult {
+  path: string;
+  text: string;
+}
+
+export interface MemoryWriteResult {
+  ok: boolean;
+  path: string;
+  mode: "append" | "replace";
+  bytesWritten: number;
+}
+
 // Result of a completed eval run
 export interface EvalRunResult {
   runId: string;

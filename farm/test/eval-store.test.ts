@@ -8,6 +8,7 @@ import {
   getStoredEvalType,
   getStoredVariantPerformance,
   getRecentRunsForAgent,
+  getProgressHistory,
   resetEvalStore,
 } from "../src/eval-store.js";
 
@@ -209,7 +210,7 @@ describe("eval-store", () => {
         status: "completed",
         score: 5000,
         maxScore: -1,
-        taskResults: { netWorth: 5000 },
+        taskResults: { totalAssets: 5000 },
         costUsd: 2.5,
         durationMs: 60000,
       },
@@ -225,6 +226,35 @@ describe("eval-store", () => {
     expect(vb).toBeDefined();
     expect(vb!.recentRuns[0].status).toBe("completed");
     expect(vb!.recentRuns[0].score).toBe(5000);
+  });
+
+  it("builds progress history for charting", () => {
+    // Report progress for day 1, 2, 3
+    storeEvalProgress("run-chart", "agent-01", "vending-bench", "native-0d", "Agent One", "fast", {
+      current: 1, total: 5, score: 500, costUsd: 0.1, elapsedMs: 5000,
+    });
+    storeEvalProgress("run-chart", "agent-01", "vending-bench", "native-0d", "Agent One", "fast", {
+      current: 2, total: 5, score: 550, costUsd: 0.2, elapsedMs: 10000,
+    });
+    storeEvalProgress("run-chart", "agent-01", "vending-bench", "native-0d", "Agent One", "fast", {
+      current: 3, total: 5, score: 600, costUsd: 0.35, elapsedMs: 16000,
+    });
+
+    const history = getProgressHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].runId).toBe("run-chart");
+    expect(history[0].agentName).toBe("Agent One");
+    expect(history[0].checkpoints).toHaveLength(3);
+    expect(history[0].checkpoints[0]).toEqual({
+      day: 1, total: 5, score: 500, costUsd: 0.1, elapsedMs: 5000, memoryTokens: undefined,
+    });
+    expect(history[0].checkpoints[2].score).toBe(600);
+
+    // Duplicate day should not be appended
+    storeEvalProgress("run-chart", "agent-01", "vending-bench", "native-0d", "Agent One", "fast", {
+      current: 3, total: 5, score: 601, costUsd: 0.36, elapsedMs: 16500,
+    });
+    expect(getProgressHistory()[0].checkpoints).toHaveLength(3);
   });
 
   it("computes startedAt from completedAt minus durationMs", () => {

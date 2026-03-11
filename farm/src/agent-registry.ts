@@ -1,5 +1,6 @@
 import type { AgentStatus, AgentMemoryGraph, AgentMessage, AgentEvalSummary } from "./types.js";
 import { logSystem } from "./logger.js";
+import { onAgentActivity } from "./sleep-guard.js";
 
 interface RegisteredAgent {
   agentId: string;
@@ -19,9 +20,31 @@ export function registerAgent(agentId: string, baseUrl: string): void {
     agentId,
     baseUrl: baseUrl.replace(/\/$/, ""),
     lastHeartbeat: Date.now(),
-    lastStatus: null,
+    // Provide a minimal status so the agent appears in getAgents() immediately
+    // (before the first heartbeat arrives with full status data)
+    lastStatus: {
+      id: agentId,
+      name: agentId,
+      memoryVariant: "",
+      status: "online",
+      uptimeSeconds: 0,
+      lastHeartbeat: new Date().toISOString(),
+      mode: "eval",
+      messagesProcessed: 0,
+      sessionsTotal: 0,
+      sessionsActive: 0,
+      contextTokensUsed: 0,
+      contextTokensAvailable: 0,
+      costInputTokens: 0,
+      costOutputTokens: 0,
+      costCacheReadTokens: 0,
+      costEstimatedUsd: 0,
+      metrics: {},
+      integrations: [],
+    },
   });
   logSystem(`Agent registered: ${agentId} at ${baseUrl}`);
+  onAgentActivity();
 }
 
 export function updateHeartbeat(agentId: string, status: AgentStatus): void {

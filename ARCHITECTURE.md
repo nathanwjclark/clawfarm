@@ -14,7 +14,7 @@ Clawfarm has three main subsystems that run as separate processes:
 | **Agent-Base** | `agent-base/` | Agent runtime harness — wraps OpenClaw with pluggable memory backends |
 | **Evals** | External repos (e.g. `vending-bench/`) | Standardized benchmarks that test agents via HTTP |
 
-OpenClaw (the underlying agent engine) is a separate project that agent-base wraps with memory and tool abstractions.
+OpenClaw (the underlying agent engine) is a separate project that agent-base wraps with memory and tool abstractions. In the current design, OpenClaw exposes generic memory tools while Clawfarm variants remain the source of truth for memory storage, recall injection, and write policy.
 
 ## How It Works
 
@@ -50,10 +50,12 @@ This keeps eval logic (simulation, scoring) cleanly separated from agent infrast
 Each agent variant runs the same OpenClaw engine but with a different memory backend:
 
 - **native-0D**: Flat file storage (baseline)
-- **graph-1D**: Graph-structured entity/relationship memory
-- **vector-2D**: Vector-indexed semantic retrieval
+- **three-layer-1d**: Three-layer file routing with LLM-driven consolidation
+- **five-day-1d**: Boot-discipline memory with learnings, handover, and backend-owned recall
 
 The memory backend is swappable via the `MemoryBackend` interface in agent-base. Each variant registers with the farm and reports heartbeats.
+Backends now own their workspace composition and eval persona overlays rather than relying on generic root-file seeding outside the memory layer.
+Backends also own prompt-time recall and in-turn memory storage through an HTTP bridge that OpenClaw's memory tools call into.
 
 ### Farm Dashboard
 
@@ -99,7 +101,12 @@ When the farm dispatches an eval, `EvalBridge` in agent-base:
         evals/
           vending-bench.ts     (eval definition: args, paths, agentMode)
           registry.ts
-        memory/                (MemoryBackend interface + backends)
+        memory/
+          backend-memory-store.ts
+          memory-backend-bridge.ts
+          memory-backend.ts    (shared backend interface)
+          backend-factory.ts   (variant selection)
+          variants/            (native/, three-layer/, five-day/)
         monitoring/            (heartbeat, cost tracking)
       test/
 
@@ -115,7 +122,7 @@ When the farm dispatches an eval, `EvalBridge` in agent-base:
       llm/                     (direct Anthropic API client)
     test/
 
-  openclaw/                    (separate repo — the agent engine, not modified)
+  openclaw/                    (separate repo — the agent engine)
 ```
 
 ## Running
@@ -127,7 +134,7 @@ When the farm dispatches an eval, `EvalBridge` in agent-base:
 cd clawfarm && ./start.sh
 
 # In another terminal, start an agent
-cd clawfarm/agent-base && npx tsx src/runner.ts --memory native-0D
+cd clawfarm/agent-base && npx tsx src/runner.ts --config configs/example.json
 
 # Run an eval against it
 cd vending-bench && npx tsx src/index.ts run --mode agent --agent-url http://localhost:3900 --days 20

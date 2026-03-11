@@ -2,12 +2,12 @@ import express from "express";
 import type { Server } from "node:http";
 import type { AgentBaseConfig } from "../config.js";
 import { createMemoryBackend } from "../memory/backend-factory.js";
+import { registerMemoryBackendRoutes } from "../memory/memory-backend-bridge.js";
 import type { MemoryBackend } from "../memory/memory-backend.js";
 import { AgentMonitor } from "../monitoring/agent-monitor.js";
 import { FarmReporter } from "../monitoring/farm-reporter.js";
 import { ChatHandler } from "./chat-handler.js";
 import { EvalRunner } from "./eval-runner.js";
-import { seedWorkspace } from "./workspace-seed.js";
 import { getEvalDefinition, getAllEvalDefinitions, getExternalEvalDefinition, getAllExternalEvalDefinitions } from "../evals/registry.js";
 import { ExternalEvalRunner } from "./external-eval-runner.js";
 import { EvalBridge } from "./eval-bridge.js";
@@ -40,13 +40,14 @@ export class AgentProcess {
     this.chatHandler = new ChatHandler(config, this.monitor, this.backend);
     this.evalRunner = new EvalRunner(config, this.monitor, this.reporter, this.backend);
     this.externalEvalRunner = new ExternalEvalRunner(config, this.monitor, this.reporter);
-    this.evalBridge = new EvalBridge(config, this.monitor, this.reporter, this.chatHandler);
+    this.evalBridge = new EvalBridge(config, this.monitor, this.reporter, this.chatHandler, this.backend);
     this.app = this.createApp();
   }
 
   private createApp(): ReturnType<typeof express> {
     const app = express();
     app.use(express.json());
+    registerMemoryBackendRoutes(app, this.backend);
 
     // Status endpoint — farm pulls this
     app.get("/status", (_req, res) => {
@@ -96,11 +97,13 @@ export class AgentProcess {
 
     // Start an eval run (scripted or external)
     app.post("/eval/start", async (req, res) => {
-      const { evalId, clockSpeed, customDelayMs, days } = req.body as {
+      const { evalId, clockSpeed, customDelayMs, days, seed, resetMemory } = req.body as {
         evalId?: string;
         clockSpeed?: string;
         customDelayMs?: number;
         days?: number;
+        seed?: number;
+        resetMemory?: boolean;
       };
 
       if (!evalId) {
@@ -122,7 +125,7 @@ export class AgentProcess {
       if (externalDef) {
         // Use EvalBridge for agent-mode evals, ExternalEvalRunner for legacy mode
         if (externalDef.agentMode) {
-          const runPromise = this.evalBridge.runEval(externalDef, { days });
+          const runPromise = this.evalBridge.runEval(externalDef, { days, seed, resetMemory });
           runPromise.catch((err) => {
             console.error("[agent-process] Eval bridge run failed:", err);
           });
@@ -224,6 +227,27 @@ export class AgentProcess {
       });
     });
 
+    // SSE endpoint for streaming eval logs
+    app.get("/eval/logs", (req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+
+      // Send buffered lines as catch-up
+      for (const line of this.evalBridge.getLogBuffer()) {
+        res.write(`data: ${JSON.stringify(line)}\n\n`);
+      }
+
+      // Subscribe to new lines
+      const unsub = this.evalBridge.subscribeLogs((line) => {
+        res.write(`data: ${JSON.stringify(line)}\n\n`);
+      });
+
+      req.on("close", unsub);
+    });
+
     // -----------------------------------------------------------------------
     // Eval HTTP contract: eval subprocess ↔ agent-base
     // These endpoints are called by the eval process (e.g., vending-bench --mode agent)
@@ -323,9 +347,6 @@ export class AgentProcess {
 
   /** Start the agent process: HTTP server, registration, heartbeat. */
   async start(): Promise<void> {
-    // Seed workspace so openclaw skips bootstrap on first chat
-    await seedWorkspace(this.config.workspaceDir, this.config);
-
     // Initialize memory backend with workspace
     await this.backend.init(this.config.workspaceDir);
 
@@ -334,6 +355,7 @@ export class AgentProcess {
       this.server = this.app.listen(this.config.port, () => {
         const addr = this.server!.address();
         this.actualPort = typeof addr === "object" && addr ? addr.port : this.config.port;
+        this.chatHandler.setMemoryBackendBaseUrl(`http://127.0.0.1:${this.actualPort}`);
         console.log(`[agent-process] ${this.config.agentId} listening on port ${this.actualPort}`);
         resolve();
       });

@@ -9,13 +9,17 @@ import type { FarmReporter } from "../monitoring/farm-reporter.js";
 import type {
   ExternalEvalDefinition,
   ExternalEvalProgress,
+  LlmCallProfileData,
   RunMetrics,
 } from "../evals/external-eval-definition.js";
 import type { EvalRunResult } from "../types.js";
 import type { ChatHandler } from "./chat-handler.js";
+import type { MemoryBackend } from "../memory/memory-backend.js";
 
 export interface EvalBridgeRunOptions {
   days?: number;
+  seed?: number;
+  resetMemory?: boolean;
 }
 
 /**
@@ -28,18 +32,48 @@ export interface EvalBridgeRunOptions {
  * 3. Monitors the subprocess (progress from stdout, exit code)
  * 4. Reads transcript on completion
  */
+export type LogSubscriber = (line: string) => void;
+
 export class EvalBridge {
   private running = false;
   private currentRunId: string | null = null;
   private childProcess: ChildProcess | null = null;
   private lastProgress: ExternalEvalProgress | null = null;
 
+  /** Rolling log buffer (last N lines). */
+  private logBuffer: string[] = [];
+  private readonly LOG_BUFFER_SIZE = 500;
+  /** SSE subscribers for live log streaming. */
+  private logSubscribers = new Set<LogSubscriber>();
+
   constructor(
     private config: AgentBaseConfig,
     private monitor: AgentMonitor,
     private reporter: FarmReporter,
     private chatHandler: ChatHandler,
+    private backend: MemoryBackend,
   ) {}
+
+  /** Get buffered log lines (for initial catch-up on SSE connect). */
+  getLogBuffer(): string[] {
+    return [...this.logBuffer];
+  }
+
+  /** Subscribe to live log lines. Returns unsubscribe function. */
+  subscribeLogs(fn: LogSubscriber): () => void {
+    this.logSubscribers.add(fn);
+    return () => { this.logSubscribers.delete(fn); };
+  }
+
+  private pushLog(line: string): void {
+    this.logBuffer.push(line);
+    if (this.logBuffer.length > this.LOG_BUFFER_SIZE) {
+      this.logBuffer.shift();
+    }
+    for (const fn of this.logSubscribers) {
+      try { fn(line); } catch {}
+    }
+  }
 
   isRunning(): boolean {
     return this.running;
@@ -103,10 +137,19 @@ export class EvalBridge {
     }
 
     this.running = true;
+    this.logBuffer = [];
     const runId = `run-${crypto.randomBytes(4).toString("hex")}`;
     this.currentRunId = runId;
     this.lastProgress = null;
     const startTime = Date.now();
+
+    // Reset memory by default so each eval starts clean
+    const shouldReset = options.resetMemory !== false; // default true
+    if (shouldReset) {
+      console.log(`[eval-bridge] Resetting memory backend before eval`);
+      await this.backend.reset();
+      await this.backend.init(this.config.workspaceDir);
+    }
 
     console.log(`[eval-bridge] Starting "${evalDef.name}" (${runId}) in agent mode`);
 
@@ -116,6 +159,7 @@ export class EvalBridge {
     await fs.mkdir(logDir, { recursive: true });
 
     const days = options.days ?? evalDef.defaultDays;
+    const seed = options.seed;
     const evalDir = this.resolveEvalDir(evalDef.id);
 
     // Build the agent URL that the eval subprocess will call back to
@@ -125,7 +169,7 @@ export class EvalBridge {
     const agentPort = this.config.port || 3900; // fallback
 
     // Resolve command args — replace placeholders
-    const resolvedArgs = evalDef.args.map((arg) =>
+    const rawArgs = evalDef.args.map((arg) =>
       arg
         .replace("{days}", String(days))
         .replace("{logDir}", logDir)
@@ -135,8 +179,19 @@ export class EvalBridge {
         .replace("{agentPort}", String(agentPort))
         .replace("{agentUrl}", `http://localhost:${agentPort}`)
         .replace("{farmUrl}", this.config.farmDashboardUrl)
-        .replace("{agentId}", this.config.agentId),
+        .replace("{agentId}", this.config.agentId)
+        .replace("{seed}", seed !== undefined ? String(seed) : ""),
     );
+
+    // Strip --event-seed pair when no seed was provided
+    const resolvedArgs: string[] = [];
+    for (let i = 0; i < rawArgs.length; i++) {
+      if (rawArgs[i] === "--event-seed" && (!rawArgs[i + 1] || rawArgs[i + 1] === "")) {
+        i++; // skip empty value
+        continue;
+      }
+      resolvedArgs.push(rawArgs[i]);
+    }
 
     // Update monitor with running state
     this.monitor.setEvalSummary({
@@ -154,11 +209,16 @@ export class EvalBridge {
     let evalStatus: "completed" | "failed" = "completed";
     let lastError: string | null = null;
 
-    // Track when we last reported progress
-    let lastProgressReportTime = 0;
+    // Report progress on every day for chart granularity
     let lastProgressReportDay = 0;
-    const PROGRESS_REPORT_INTERVAL_MS = 30_000;
-    const PROGRESS_REPORT_DAY_INTERVAL = 5;
+    // Profile regex: [PROFILE] day=N turn=N wall=N handler=N openclaw=N boot=N llm=N tool=N
+    const profilePattern = /^\[PROFILE\]\s+day=(\d+)\s+turn=(\d+)\s+wall=(\d+)\s+handler=(\d+)\s+openclaw=(\d+)\s+boot=(\d+)\s+llm=(\d+)\s+tool=(\d+)/;
+    // Per-call profile: [PROFILE_CALLS] day=N [{...}, ...]
+    const profileCallsPattern = /^\[PROFILE_CALLS\]\s+day=(\d+)\s+(.+)$/;
+    /** Parsed profile data keyed by day number. */
+    const dayProfiles = new Map<number, { wallMs: number; handlerMs: number; openclawMs: number; bootstrapMs: number; llmApiMs: number; toolExecMs: number; llmCallProfiles?: LlmCallProfileData[] }>();
+    // Track the last progress snapshot so we can re-report it with profile data attached
+    let pendingProgressReport: { day: number; total: number; score?: number; costUsd: number; elapsedMs: number } | null = null;
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -172,45 +232,111 @@ export class EvalBridge {
 
         const rl = createInterface({ input: this.childProcess.stdout! });
 
+        // Helper: flush a pending progress report, attaching profile data if available
+        const flushProgress = (report: NonNullable<typeof pendingProgressReport>) => {
+          const dayProfile = dayProfiles.get(report.day);
+          this.reporter
+            .reportEvalProgress(runId, evalDef.id, this.config.memoryVariant, {
+              current: report.day,
+              total: report.total,
+              label: "day",
+              score: report.score,
+              costUsd: report.costUsd,
+              elapsedMs: report.elapsedMs,
+              turnProfile: dayProfile ? {
+                wallMs: dayProfile.wallMs,
+                chatHandlerMs: dayProfile.handlerMs,
+                openclawMs: dayProfile.openclawMs,
+                bootstrapMs: dayProfile.bootstrapMs,
+                llmApiMs: dayProfile.llmApiMs,
+                toolExecMs: dayProfile.toolExecMs,
+                llmCallProfiles: dayProfile.llmCallProfiles,
+              } : undefined,
+            })
+            .catch(() => {});
+        };
+
         rl.on("line", (line: string) => {
+          // Parse [PROFILE] lines FIRST — they arrive after the progress line
+          // for the same day, so we need them in the map before flushing.
+          const profileMatch = line.match(profilePattern);
+          if (profileMatch) {
+            const day = parseInt(profileMatch[1], 10);
+            dayProfiles.set(day, {
+              wallMs: parseInt(profileMatch[3], 10),
+              handlerMs: parseInt(profileMatch[4], 10),
+              openclawMs: parseInt(profileMatch[5], 10),
+              bootstrapMs: parseInt(profileMatch[6], 10),
+              llmApiMs: parseInt(profileMatch[7], 10),
+              toolExecMs: parseInt(profileMatch[8], 10),
+            });
+            // If there's a pending report for this day, flush it now with profile attached.
+            // [PROFILE_CALLS] may follow on the next line and add llmCallProfiles to the
+            // dayProfiles entry before the next progress line triggers a flush.
+            if (pendingProgressReport && pendingProgressReport.day === day) {
+              flushProgress(pendingProgressReport);
+              pendingProgressReport = null;
+            }
+          }
+
+          // Parse [PROFILE_CALLS] lines for per-LLM-call data
+          const callsMatch = line.match(profileCallsPattern);
+          if (callsMatch) {
+            const day = parseInt(callsMatch[1], 10);
+            try {
+              const calls = JSON.parse(callsMatch[2]) as LlmCallProfileData[];
+              const existing = dayProfiles.get(day);
+              if (existing) {
+                existing.llmCallProfiles = calls;
+              }
+            } catch {
+              // Malformed JSON — skip
+            }
+          }
+
           // Try to match progress pattern
           const match = line.match(evalDef.progressPattern);
           if (match) {
             const current = parseInt(match[1], 10);
             const total = parseInt(match[2], 10);
-            const netWorthStr = match[3];
-            const netWorth = netWorthStr
-              ? parseFloat(netWorthStr.replace(/,/g, ""))
+            const scoreStr = match[3];
+            const score = scoreStr
+              ? parseFloat(scoreStr.replace(/,/g, ""))
               : undefined;
+
+            const costState = this.monitor.costTracker.getState();
+            const elapsedMs = Date.now() - startTime;
 
             this.lastProgress = {
               current,
               total,
               label: "day",
-              score: netWorth,
+              score,
+              costUsd: costState.estimatedUsd,
+              elapsedMs,
             };
 
-            // Report progress to farm periodically
-            const now = Date.now();
-            const shouldReport =
-              now - lastProgressReportTime >= PROGRESS_REPORT_INTERVAL_MS ||
-              current - lastProgressReportDay >= PROGRESS_REPORT_DAY_INTERVAL;
-
-            if (shouldReport) {
-              lastProgressReportTime = now;
+            // Report progress on every new day for chart granularity
+            if (current > lastProgressReportDay) {
+              // Flush any previous pending report (profile line may have been missed)
+              if (pendingProgressReport) {
+                flushProgress(pendingProgressReport);
+              }
               lastProgressReportDay = current;
-              this.reporter
-                .reportEvalProgress(runId, evalDef.id, this.config.memoryVariant, {
-                  current,
-                  total,
-                  label: "day",
-                  score: netWorth,
-                })
-                .catch(() => {});
+              // If we already have profile data for this day (unlikely but possible),
+              // flush immediately; otherwise defer until [PROFILE] line arrives.
+              const report = { day: current, total, score, costUsd: costState.estimatedUsd, elapsedMs };
+              if (dayProfiles.has(current)) {
+                flushProgress(report);
+                pendingProgressReport = null;
+              } else {
+                pendingProgressReport = report;
+              }
             }
           }
 
-          // Log all stdout
+          // Log all stdout — buffer + stream to subscribers
+          this.pushLog(line);
           console.log(`[eval-bridge] ${line}`);
         });
 
@@ -218,6 +344,7 @@ export class EvalBridge {
         if (this.childProcess.stderr) {
           const errRl = createInterface({ input: this.childProcess.stderr });
           errRl.on("line", (line: string) => {
+            this.pushLog(`[stderr] ${line}`);
             console.error(`[eval-bridge:stderr] ${line}`);
           });
         }
@@ -227,6 +354,11 @@ export class EvalBridge {
         });
 
         this.childProcess.on("close", (code) => {
+          // Flush any remaining pending progress report (last day's profile)
+          if (pendingProgressReport) {
+            flushProgress(pendingProgressReport);
+            pendingProgressReport = null;
+          }
           this.childProcess = null;
           if (code !== 0) {
             evalStatus = "failed";

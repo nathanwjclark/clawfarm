@@ -12,7 +12,7 @@ import type { ClockSpeed } from "../messaging/eval-source.js";
 import { EvalSource } from "../messaging/eval-source.js";
 import { SimRegistry } from "../integrations/sim-registry.js";
 import { ChatHandler } from "./chat-handler.js";
-import { seedWorkspace } from "./workspace-seed.js";
+import { MemoryBackendBridgeServer } from "../memory/memory-backend-bridge.js";
 
 export interface EvalRunOptions {
   clockSpeed?: ClockSpeed;
@@ -78,9 +78,6 @@ export class EvalRunner {
     );
     await fs.mkdir(evalWorkspace, { recursive: true });
 
-    // Pre-seed workspace files so openclaw skips bootstrap
-    await seedWorkspace(evalWorkspace, this.config);
-
     // Create eval config with the fresh workspace
     const evalConfig = { ...this.config, workspaceDir: evalWorkspace };
 
@@ -99,6 +96,8 @@ export class EvalRunner {
     // Track transcripts per session
     const transcripts = new Map<number, SessionTranscript>();
     let chatHandler = new ChatHandler(evalConfig, this.monitor, evalBackend);
+    const memoryBridge = new MemoryBackendBridgeServer(evalBackend);
+    chatHandler.setMemoryBackendBaseUrl(await memoryBridge.start());
     let currentSessionIndex = -1;
 
     // Set up integration sims if the eval defines them
@@ -192,7 +191,7 @@ export class EvalRunner {
 
         try {
           const response = await chatHandler.handleMessage(msg.content);
-          source.onAgentResponse(response);
+          source.onAgentResponse(response.text);
 
           // Record in transcript
           const userMsg: AgentMessage = {
@@ -206,17 +205,17 @@ export class EvalRunner {
             id: `eval-asst-${transcript.exchanges.length}`,
             timestamp: new Date().toISOString(),
             role: "assistant",
-            content: response,
-            tokenCount: Math.ceil(response.length / 4),
+            content: response.text,
+            tokenCount: Math.ceil(response.text.length / 4),
           };
           transcript.messages.push(userMsg, assistantMsg);
           transcript.exchanges.push({
             userMessage: msg.content,
-            agentResponse: response,
+            agentResponse: response.text,
           });
 
           console.log(
-            `[eval-runner] Response: "${response.slice(0, 100)}..."`,
+            `[eval-runner] Response: "${response.text.slice(0, 100)}..."`,
           );
 
           // Check cost cap
@@ -254,6 +253,8 @@ export class EvalRunner {
       evalStatus = "failed";
       lastError = (err as Error).message;
       console.error(`[eval-runner] Fatal eval error: ${lastError}`);
+    } finally {
+      await memoryBridge.stop();
     }
 
     this.running = false;
@@ -345,4 +346,3 @@ export class EvalRunner {
     return result;
   }
 }
-

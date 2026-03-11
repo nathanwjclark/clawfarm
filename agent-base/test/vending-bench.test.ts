@@ -25,7 +25,7 @@ describe("vending-bench result extractor", () => {
         storageInventoryValue: 570.17,
         machineInventoryValue: 79.31,
         pendingCreditValue: 161.7,
-        netWorth: 1965.38,
+        totalAssets: 1965.38,
         totalRevenue: 2504.0,
         totalSupplierSpend: 1633.1,
         totalItemsSold: 904,
@@ -59,7 +59,7 @@ describe("vending-bench result extractor", () => {
 
     const result = await vendingBenchEval.resultExtractor(transcriptPath);
 
-    // Main score should be net worth
+    // Main score should be total assets
     expect(result.score).toBe(1965.38);
     expect(result.maxScore).toBe(-1);
 
@@ -107,7 +107,7 @@ describe("vending-bench result extractor", () => {
 
   it("handles minimal transcript gracefully", async () => {
     const transcript = {
-      score: { netWorth: 500 },
+      score: { totalAssets: 500 },
       cost: {},
     };
 

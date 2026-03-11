@@ -34,8 +34,43 @@ interface AgentCliResult {
       };
       toolCalls?: number;
       toolExecutions?: number;
+      timing?: {
+        bootstrapMs?: number;
+        llmApiMs?: number;
+        toolExecMs?: number;
+        llmCallCount?: number;
+        toolExecCount?: number;
+      };
     };
     error?: { kind: string; message: string };
+  };
+}
+
+/** Per-LLM-call profiling data from openclaw. */
+export interface LlmCallProfile {
+  callIndex: number;
+  callType: "initial" | "tool_followup";
+  totalMs: number;
+  ttfcMs?: number;
+  generationMs?: number;
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  toolCallsRequested: number;
+}
+
+/** Profiling timing data from a single agent turn. All values in milliseconds. */
+export interface TurnProfile {
+  /** Total time in chat handler (handleMessage entry to exit). */
+  chatHandlerMs: number;
+  /** Total time in openclaw subprocess (execFile). */
+  openclawMs?: number;
+  /** Openclaw internal breakdown (from agentMeta.timing). */
+  openclaw?: {
+    bootstrapMs?: number;
+    llmApiMs?: number;
+    toolExecMs?: number;
+    llmCallCount?: number;
+    toolExecCount?: number;
+    llmCallProfiles?: LlmCallProfile[];
   };
 }
 
@@ -45,6 +80,8 @@ export interface MessageResult {
   toolCalls: number;
   tokenUsage?: { input: number; output: number; cacheRead?: number };
   stderr?: string;
+  /** Profiling timing data for this turn. */
+  profile?: TurnProfile;
 }
 
 /** Configuration for eval plugin support. */
@@ -73,6 +110,7 @@ export class ChatHandler {
 
   private simRegistry: SimRegistry | null = null;
   private evalPluginConfig: EvalPluginConfig | null = null;
+  private memoryBackendBaseUrl: string | null = null;
 
   constructor(
     private config: AgentBaseConfig,
@@ -85,6 +123,10 @@ export class ChatHandler {
   /** Attach integration sims that will inject context into prompts. */
   setSimRegistry(registry: SimRegistry | null): void {
     this.simRegistry = registry;
+  }
+
+  setMemoryBackendBaseUrl(url: string | null): void {
+    this.memoryBackendBaseUrl = url;
   }
 
   /**
@@ -107,6 +149,7 @@ export class ChatHandler {
       throw new Error("Agent is busy processing a previous message");
     }
     this.busy = true;
+    const handleStart = Date.now();
 
     try {
       // Start session on first message
@@ -139,7 +182,7 @@ export class ChatHandler {
       }
 
       // Call openclaw agent CLI
-      const { result, stderr } = await this.callOpenClawAgent(prompt);
+      const { result, stderr, openclawMs } = await this.callOpenClawAgent(prompt);
 
       // Extract response text
       const responseText = result.payloads
@@ -193,6 +236,22 @@ export class ChatHandler {
         .then((graph) => this.monitor.setMemoryGraph(graph))
         .catch((err) => console.error("[chat-handler] Graph extraction error:", err));
 
+      // Build profiling data
+      const chatHandlerMs = Date.now() - handleStart;
+      const openclawTiming = agentMeta?.timing;
+      const profile: TurnProfile = {
+        chatHandlerMs,
+        openclawMs,
+        openclaw: openclawTiming ? {
+          bootstrapMs: openclawTiming.bootstrapMs,
+          llmApiMs: openclawTiming.llmApiMs,
+          toolExecMs: openclawTiming.toolExecMs,
+          llmCallCount: openclawTiming.llmCallCount,
+          toolExecCount: openclawTiming.toolExecCount,
+          llmCallProfiles: openclawTiming.llmCallProfiles,
+        } : undefined,
+      };
+
       return {
         text: responseText,
         toolCalls,
@@ -200,6 +259,7 @@ export class ChatHandler {
           ? { input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead }
           : undefined,
         stderr: stderr || undefined,
+        profile,
       };
     } finally {
       this.busy = false;
@@ -226,6 +286,11 @@ export class ChatHandler {
         const configObj: Record<string, unknown> = {
           ...this.backend.generateOpenclawConfig(this.config.workspaceDir),
         };
+
+        // Set model from agent-base config (e.g. "anthropic/claude-sonnet-4-6")
+        const agentDefaults = (configObj.agents as Record<string, any>)?.defaults ?? {};
+        agentDefaults.model = { primary: `${this.config.provider}/${this.config.model}` };
+        (configObj.agents as Record<string, any>).defaults = agentDefaults;
 
         // If eval plugin is configured, add plugin paths and tool allow-list
         if (this.evalPluginConfig) {
@@ -259,8 +324,9 @@ export class ChatHandler {
     return this.openclawHomeReady;
   }
 
-  private async callOpenClawAgent(message: string): Promise<{ result: AgentCliResult; stderr: string }> {
+  private async callOpenClawAgent(message: string): Promise<{ result: AgentCliResult; stderr: string; openclawMs: number }> {
     const openclawHome = await this.ensureOpenclawHome();
+    const spawnStart = Date.now();
 
     return new Promise((resolve, reject) => {
       const args = [
@@ -270,7 +336,7 @@ export class ChatHandler {
         "--json",
         "--session-id", this.sessionId,
         "--message", message,
-        "--timeout", "120",
+        "--timeout", "300",
       ];
 
       const env: Record<string, string | undefined> = {
@@ -278,6 +344,9 @@ export class ChatHandler {
         // Point openclaw at our controlled home dir with workspace config
         OPENCLAW_HOME: openclawHome,
       };
+      if (this.memoryBackendBaseUrl) {
+        env.OPENCLAW_EXTERNAL_MEMORY_URL = this.memoryBackendBaseUrl;
+      }
 
       // Pass state file path for eval plugin tools
       if (this.evalPluginConfig?.stateFilePath) {
@@ -288,7 +357,7 @@ export class ChatHandler {
         cwd: OPENCLAW_DIR,
         env,
         maxBuffer: 10 * 1024 * 1024, // 10MB for large responses
-        timeout: 130_000, // slightly over the agent timeout
+        timeout: 310_000, // slightly over the agent timeout
         killSignal: "SIGKILL", // ensure child dies on timeout
       }, (err, stdout, stderr) => {
         if (err) {
@@ -343,7 +412,7 @@ export class ChatHandler {
             reject(new Error(`Agent error (${result.meta.error.kind}): ${result.meta.error.message}`));
             return;
           }
-          resolve({ result, stderr: stderr || "" });
+          resolve({ result, stderr: stderr || "", openclawMs: Date.now() - spawnStart });
         } catch {
           reject(new Error(`Failed to parse openclaw output: ${stdout.slice(0, 500)}`));
         }
@@ -406,17 +475,14 @@ export class ChatHandler {
     // Ensure memory directory exists
     await fs.mkdir(path.join(ws, "memory"), { recursive: true });
 
-    // Write identity file if provided
-    if (evalConfig.identity) {
-      await fs.writeFile(path.join(ws, "IDENTITY.md"), evalConfig.identity);
-    }
+    const composedFiles = await this.backend.composeEvalWorkspaceFiles({
+      identity: evalConfig.identity,
+      workspaceFiles: evalConfig.workspaceFiles,
+    });
 
-    // Write workspace bootstrap files (AGENTS.md, SOUL.md, TOOLS.md, etc.)
-    // Always overwritten to ensure correct persona for each eval run.
-    if (evalConfig.workspaceFiles) {
-      for (const [filename, content] of Object.entries(evalConfig.workspaceFiles)) {
-        await fs.writeFile(path.join(ws, filename), content);
-      }
+    for (const [filename, content] of Object.entries(composedFiles)) {
+      await fs.mkdir(path.dirname(path.join(ws, filename)), { recursive: true });
+      await fs.writeFile(path.join(ws, filename), content);
     }
   }
 

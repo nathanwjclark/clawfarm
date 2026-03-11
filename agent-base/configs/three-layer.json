@@ -1,0 +1,11 @@
+{
+  "agentId": "agent-3layer-01",
+  "agentName": "three-layer-1d",
+  "memoryVariant": "three-layer-1d",
+  "mode": "eval",
+  "farmDashboardUrl": "http://localhost:3847",
+  "workspaceDir": "/tmp/clawfarm/workspaces/agent-3layer-01",
+  "port": 3901,
+  "openclawDir": "../../../openclaw",
+  "externalEvalDirs": ["../../../vending-bench"]
+}

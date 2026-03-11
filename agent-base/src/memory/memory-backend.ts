@@ -1,4 +1,11 @@
-import type { AgentMemoryGraph, AgentMessage, MemorySnapshot } from "../types.js";
+import type {
+  AgentMemoryGraph,
+  AgentMessage,
+  MemoryReadResult,
+  MemorySearchResult,
+  MemorySnapshot,
+  MemoryWriteResult,
+} from "../types.js";
 
 /**
  * Central memory abstraction. Each variant (0D, 1D, 2D, etc.) implements
@@ -11,6 +18,42 @@ import type { AgentMemoryGraph, AgentMessage, MemorySnapshot } from "../types.js
 export interface MemoryBackend {
   readonly variantId: string;
   readonly dimensionality: "0D" | "1D" | "2D" | "2D+";
+
+  /**
+   * Compose workspace bootstrap files for eval runs.
+   * Variants own how base templates and eval persona files are merged.
+   */
+  composeEvalWorkspaceFiles(input: {
+    identity?: string;
+    workspaceFiles?: Record<string, string>;
+  }): Promise<Record<string, string>>;
+
+  /**
+   * In-turn memory search routed through the backend implementation.
+   */
+  searchMemory(input: {
+    query: string;
+    maxResults?: number;
+    minScore?: number;
+  }): Promise<MemorySearchResult[]>;
+
+  /**
+   * In-turn targeted memory read routed through the backend implementation.
+   */
+  readMemory(input: {
+    path: string;
+    from?: number;
+    lines?: number;
+  }): Promise<MemoryReadResult>;
+
+  /**
+   * In-turn memory write routed through the backend implementation.
+   */
+  writeMemory(input: {
+    path: string;
+    content: string;
+    mode?: "append" | "replace";
+  }): Promise<MemoryWriteResult>;
 
   /**
    * Called BEFORE each agent turn. Receives the conversation so far.
@@ -47,8 +90,8 @@ export interface MemoryBackend {
 
   /**
    * Generate openclaw config object (written as openclaw.json).
-   * Non-0D backends should disable openclaw's native memory tools
-   * since they handle memory externally.
+   * Variants should configure OpenClaw to use the external memory bridge
+   * whenever storage and retrieval live inside the backend.
    */
   generateOpenclawConfig(workspaceDir: string): Record<string, unknown>;
 

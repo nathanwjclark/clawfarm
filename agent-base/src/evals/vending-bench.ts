@@ -16,7 +16,7 @@ export const vendingBenchEval: ExternalEvalDefinition = {
   name: "Vending Bench",
   description:
     "365-day vending machine business simulation. Measures strategic planning, " +
-    "financial management, and long-term decision-making. Score is net worth in dollars.",
+    "financial management, and long-term decision-making. Score is total assets in dollars.",
   category: "simulation",
   command: "npx",
   args: [
@@ -35,10 +35,12 @@ export const vendingBenchEval: ExternalEvalDefinition = {
     "{agentId}",
     "--log-dir",
     "{logDir}",
+    "--event-seed",
+    "{seed}",
   ],
   defaultDays: 365,
-  maxScore: -1, // unbounded — score is net worth in dollars
-  progressPattern: /Day (\d+)\/(\d+).*Net Worth: \$([0-9.,-]+)/,
+  maxScore: -1, // unbounded — score is total assets in dollars
+  progressPattern: /Day (\d+)\/(\d+).*Total Assets: \$([0-9.,-]+)/,
   resultExtractor: extractVendingBenchResult,
   agentMode: true,
 };
@@ -75,8 +77,8 @@ async function extractVendingBenchResult(
     taskResults.grossMargin = score.totalRevenue - score.totalSupplierSpend;
   }
 
-  // Main score: net worth
-  const netWorth = score.netWorth ?? 0;
+  // Main score: total assets
+  const netWorth = score.totalAssets ?? score.netWorth ?? 0;
 
   // Wall time from transcript (seconds → ms)
   const wallTimeSeconds = transcript.wallTimeSeconds ?? 0;

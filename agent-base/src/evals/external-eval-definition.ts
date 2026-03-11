@@ -53,9 +53,37 @@ export interface RunMetrics {
   extra?: Record<string, number | string>;
 }
 
+/** Per-LLM-call profiling data. */
+export interface LlmCallProfileData {
+  callIndex: number;
+  callType: "initial" | "tool_followup";
+  totalMs: number;
+  ttfcMs?: number;
+  generationMs?: number;
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  toolCallsRequested: number;
+}
+
+/** Per-turn timing data from profiling. All values in milliseconds. */
+export interface TurnProfileData {
+  wallMs: number;
+  chatHandlerMs: number;
+  openclawMs: number;
+  bootstrapMs: number;
+  llmApiMs: number;
+  toolExecMs: number;
+  /** Per-LLM-call breakdown within this turn. */
+  llmCallProfiles?: LlmCallProfileData[];
+}
+
 export interface ExternalEvalProgress {
   current: number;
   total: number;
   label: string;
   score?: number;
+  costUsd?: number;
+  elapsedMs?: number;
+  memoryTokens?: number;
+  /** Profiling timing for this day's turn. */
+  turnProfile?: TurnProfileData;
 }

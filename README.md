@@ -13,7 +13,7 @@ npm install
 ./start.sh
 
 # In another terminal, start an agent
-cd agent-base && npx tsx src/runner.ts --memory native-0D
+cd agent-base && npx tsx src/runner.ts --config configs/example.json
 
 # Run an eval against it
 cd ../vending-bench && npx tsx src/index.ts run --mode agent --agent-url http://localhost:3900
@@ -34,8 +34,11 @@ clawfarm/
 Each agent variant uses the same OpenClaw engine with a different memory backend:
 
 - **native-0D** — flat file storage (baseline)
-- **graph-1D** — graph-structured entity/relationship memory
-- **vector-2D** — vector-indexed semantic retrieval
+- **three-layer-1d** — L1/L2/L3 file-routing architecture with explicit consolidation
+- **five-day-1d** — boot discipline, learnings, handover, and backend-owned recall
+
+Backend implementations live under `agent-base/src/memory/variants/`, with shared memory interfaces and factory code kept in `agent-base/src/memory/`.
+OpenClaw exposes the generic memory tool surface, but prompt-time recall plus in-turn memory storage and retrieval now route through the selected Clawfarm backend over an external memory bridge.
 
 ## Evals
 

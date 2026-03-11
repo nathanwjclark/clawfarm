@@ -169,16 +169,16 @@ export class ExternalEvalRunner {
           if (match) {
             const current = parseInt(match[1], 10);
             const total = parseInt(match[2], 10);
-            const netWorthStr = match[3];
-            const netWorth = netWorthStr
-              ? parseFloat(netWorthStr.replace(/,/g, ""))
+            const scoreStr = match[3];
+            const score = scoreStr
+              ? parseFloat(scoreStr.replace(/,/g, ""))
               : undefined;
 
             this.lastProgress = {
               current,
               total,
               label: "day",
-              score: netWorth,
+              score,
             };
 
             // Report progress to farm periodically
@@ -195,7 +195,7 @@ export class ExternalEvalRunner {
                   current,
                   total,
                   label: "day",
-                  score: netWorth,
+                  score,
                 })
                 .catch(() => {});
             }

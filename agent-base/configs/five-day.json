@@ -1,0 +1,11 @@
+{
+  "agentId": "agent-5day-01",
+  "agentName": "five-day-1d",
+  "memoryVariant": "five-day-1d",
+  "mode": "eval",
+  "farmDashboardUrl": "http://localhost:3847",
+  "workspaceDir": "/tmp/clawfarm/workspaces/agent-5day-01",
+  "port": 3902,
+  "openclawDir": "../../../openclaw",
+  "externalEvalDirs": ["../../../vending-bench"]
+}

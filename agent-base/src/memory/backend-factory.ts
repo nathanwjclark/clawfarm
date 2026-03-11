@@ -1,6 +1,8 @@
 import type { AgentBaseConfig } from "../config.js";
 import type { MemoryBackend } from "./memory-backend.js";
-import { NativeBackend } from "./native-backend.js";
+import { NativeBackend } from "./variants/native/backend.js";
+import { ThreeLayerBackend } from "./variants/three-layer/backend.js";
+import { FiveDayBackend } from "./variants/five-day/backend.js";
 
 /**
  * Maps a memoryVariant config string to a MemoryBackend instance.
@@ -14,6 +16,10 @@ export function createMemoryBackend(
     case "native-0d":
     case "native-0d-tuned":
       return new NativeBackend(config);
+    case "three-layer-1d":
+      return new ThreeLayerBackend(config);
+    case "five-day-1d":
+      return new FiveDayBackend(config);
     case "mem0-1d":
     case "mem0-1d-aggressive":
       throw new Error(`Memory variant "${variantId}" not yet implemented`);

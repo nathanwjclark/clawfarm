@@ -30,7 +30,7 @@ export const AgentBaseConfigSchema = z.object({
 
   // Model settings
   provider: z.string().default("anthropic"),
-  model: z.string().default("claude-sonnet-4-20250514"),
+  model: z.string().default("claude-sonnet-4-6"),
   pricing: ModelPricingSchema.default({}),
 
   // Cost caps

@@ -101,19 +101,19 @@ function renderScoreBreakdown(ev, run) {
   const entries = Object.entries(run.taskResults).filter(([k]) => k !== "_error");
   if (entries.length === 0) return "";
 
-  // For simulation evals, group into "Net Worth Components" and "Performance"
+  // For simulation evals, group into "Total Assets Components" and "Performance"
   const isSimulation = ev.category === "simulation";
   let html = `<div class="panel" style="margin-top:16px"><h3>Score Breakdown</h3>`;
 
   if (isSimulation) {
-    const netWorthKeys = ["bankBalance", "machineCash", "storageInventoryValue", "machineInventoryValue", "pendingCreditValue"];
+    const netWorthKeys = ["bankBalance", "machineCash", "storageInventoryValue", "machineInventoryValue", "pendingDeliveryValue", "pendingCreditValue"];
     const perfKeys = ["totalRevenue", "totalSupplierSpend", "totalItemsSold", "grossMargin", "daysCompleted"];
     const nwEntries = entries.filter(([k]) => netWorthKeys.includes(k));
     const perfEntries = entries.filter(([k]) => perfKeys.includes(k));
     const otherEntries = entries.filter(([k]) => !netWorthKeys.includes(k) && !perfKeys.includes(k));
 
     if (nwEntries.length > 0) {
-      html += `<h4 style="font-size:11px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;margin-top:12px">Net Worth Components</h4>`;
+      html += `<h4 style="font-size:11px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;margin-top:12px">Total Assets Components</h4>`;
       html += `<div class="stats-row" style="grid-template-columns:1fr 1fr 1fr">`;
       for (const [key, val] of nwEntries) {
         html += `<div class="stat-item"><span class="label">${formatTaskKey(key)}</span> <span class="value">${formatDollars(val)}</span></div>`;
@@ -221,19 +221,20 @@ function route() {
   // Update nav
   document.querySelectorAll(".nav-link").forEach((el) => {
     const tab = el.dataset.tab;
-    el.classList.toggle("active", tab === page || (page === "" && tab === "dashboard"));
+    el.classList.toggle("active", tab === page || (page === "" && tab === "dashboard") || (page === "matrix" && tab === "dashboard"));
   });
 
   stopPolling();
+  disconnectEvalLogStream();
 
-  if (page === "" || page === "dashboard") renderDashboard();
+  if (page === "" || page === "dashboard" || page === "matrix") renderMatrix();
   else if (page === "agent" && id) renderAgentDetail(id);
   else if (page === "cost") renderCost();
   else if (page === "evals") renderEvals();
   else if (page === "eval" && id) renderEvalDetail(id);
-  else if (page === "matrix") renderMatrix();
+  else if (page === "runs") renderRuns();
   else if (page === "variants") renderVariants();
-  else renderDashboard();
+  else renderMatrix();
 }
 
 let currentPollFn = null;
@@ -427,6 +428,60 @@ window.handleChatSend = async function (agentId) {
 };
 
 // ---------------------------------------------------------------------------
+// Eval log streaming (SSE)
+// ---------------------------------------------------------------------------
+
+let evalLogEventSource = null;
+
+function connectEvalLogStream(agentId) {
+  // Clean up any previous connection
+  if (evalLogEventSource) {
+    evalLogEventSource.close();
+    evalLogEventSource = null;
+  }
+
+  const output = $("#eval-log-output");
+  const status = $("#eval-log-status");
+  const panel = $("#eval-log-panel");
+  if (!output || !status) return;
+
+  output.textContent = "";
+  status.textContent = "connecting...";
+
+  evalLogEventSource = new EventSource(`/api/agents/${agentId}/eval/logs`);
+
+  evalLogEventSource.onopen = () => {
+    status.textContent = "streaming";
+    status.style.color = "#3fb950";
+  };
+
+  evalLogEventSource.onmessage = (event) => {
+    try {
+      const line = JSON.parse(event.data);
+      output.textContent += line + "\n";
+      // Auto-scroll to bottom
+      output.scrollTop = output.scrollHeight;
+    } catch {
+      output.textContent += event.data + "\n";
+      output.scrollTop = output.scrollHeight;
+    }
+  };
+
+  evalLogEventSource.onerror = () => {
+    status.textContent = "disconnected";
+    status.style.color = "#7d8590";
+    // Don't reconnect — EventSource will retry automatically
+  };
+}
+
+function disconnectEvalLogStream() {
+  if (evalLogEventSource) {
+    evalLogEventSource.close();
+    evalLogEventSource = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Eval controls for live agents
 // ---------------------------------------------------------------------------
 
@@ -614,8 +669,8 @@ async function renderAgentDetail(id) {
   window._agentDetailMsgCount = { get: () => lastMsgCount, set: (n) => { lastMsgCount = n; } };
 
   startPolling(async () => {
-    const [agent, graph, messages] = await Promise.all([
-      api(`/agents/${id}`), api(`/agents/${id}/memory-graph`), api(`/agents/${id}/messages`)
+    const [agent, graph, messages, evalRuns] = await Promise.all([
+      api(`/agents/${id}`), api(`/agents/${id}/memory-graph`), api(`/agents/${id}/messages`), api(`/eval-runs`)
     ]);
 
     if (!agent || agent.error) {
@@ -636,7 +691,7 @@ async function renderAgentDetail(id) {
           <div>
             <div class="panel">
               <h3>Memory Structure <span id="graph-stats" style="font-size:11px;color:#7d8590;font-weight:400">${graph.nodes.length} nodes · ${graph.edges.length} edges</span></h3>
-              <div class="memory-graph-container"><canvas id="mem-graph"></canvas></div>
+              <div class="memory-graph-container" id="mem-graph"></div>
             </div>
 
             <div class="panel">
@@ -652,6 +707,11 @@ async function renderAgentDetail(id) {
                 <div id="eval-list" style="margin-bottom:8px">Loading available evals...</div>
                 <div id="eval-run-status" class="chat-status"></div>
               </div>
+            </div>
+
+            <div class="panel" id="profiling-panel">
+              <h3>Performance Profiling</h3>
+              <div id="profiling-content"><p style="font-size:13px;color:#7d8590">No profiling data yet</p></div>
             </div>
           </div>
 
@@ -676,12 +736,27 @@ async function renderAgentDetail(id) {
                 <div id="chat-status" class="chat-status"></div>
               </div>
             </div>
+
+            <div class="panel" id="eval-log-panel">
+              <h3>Eval Log <span id="eval-log-status" style="font-size:11px;color:#7d8590;font-weight:400"></span></h3>
+              <pre class="eval-log-output" id="eval-log-output"></pre>
+            </div>
           </div>
         </div>`;
 
       lastMsgCount = messages.length;
       lastGraphNodeCount = graph.nodes.length;
       setTimeout(() => drawMemoryGraph("mem-graph", graph), 50);
+      connectEvalLogStream(id);
+
+      // Initial profiling panel render
+      if (evalRuns) {
+        const profilingEl = $("#profiling-content");
+        if (profilingEl) {
+          const agentRuns = (evalRuns || []).filter(r => r.agentId === id).sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
+          profilingEl.innerHTML = renderProfilingPanel(agentRuns);
+        }
+      }
 
       // Enable chat input and enter-to-send
       const chatInput = $("#chat-input");
@@ -749,6 +824,13 @@ async function renderAgentDetail(id) {
       lastGraphNodeCount = graph.nodes.length;
       setTimeout(() => drawMemoryGraph("mem-graph", graph), 50);
     }
+
+    // Update profiling panel
+    const profilingEl = $("#profiling-content");
+    if (profilingEl && evalRuns) {
+      const agentRuns = (evalRuns || []).filter(r => r.agentId === id).sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
+      profilingEl.innerHTML = renderProfilingPanel(agentRuns);
+    }
   });
 }
 
@@ -772,6 +854,118 @@ function renderPerfStats(agent) {
       In: ${formatTokens(agent.costInputTokens)} · Out: ${formatTokens(agent.costOutputTokens)} · Cache: ${formatTokens(agent.costCacheReadTokens)}
       <br>Total: <span class="cost-value">$${agent.costEstimatedUsd.toFixed(2)}</span>
     </div>`;
+}
+
+function formatMs(ms) {
+  if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
+function renderProfilingPanel(agentRuns) {
+  if (!agentRuns || agentRuns.length === 0) {
+    return '<p style="font-size:13px;color:#7d8590">No eval runs yet</p>';
+  }
+
+  // Find runs with profiling data (completed runs)
+  const profiledRuns = agentRuns.filter(r => r.profilingSummary);
+
+  // Also check for currently running runs with live profile data from progress history
+  const runningRuns = agentRuns.filter(r => r.status === "running");
+
+  let html = "";
+
+  // Show latest profiled run's summary
+  if (profiledRuns.length > 0) {
+    const latest = profiledRuns[0];
+    const p = latest.profilingSummary;
+    const avg = p.avg;
+    const first = p.firstDay;
+
+    html += `<div style="margin-bottom:12px">
+      <div style="font-size:12px;color:#7d8590;margin-bottom:6px">Latest: ${latest.evalId} (${latest.id})</div>
+      <div style="font-size:13px;margin-bottom:8px">
+        <strong>Average per day</strong> &mdash; wall: ${formatMs(avg.wallMs)}
+      </div>`;
+
+    // Stacked bar showing time breakdown
+    const totalAvg = avg.wallMs || 1;
+    const bootPct = (avg.bootstrapMs / totalAvg * 100).toFixed(1);
+    const llmPct = (avg.llmApiMs / totalAvg * 100).toFixed(1);
+    const toolPct = (avg.toolExecMs / totalAvg * 100).toFixed(1);
+    const overheadMs = Math.max(0, avg.wallMs - avg.bootstrapMs - avg.llmApiMs - avg.toolExecMs);
+    const overPct = (overheadMs / totalAvg * 100).toFixed(1);
+
+    html += `<div class="profile-breakdown">
+      <div class="profile-bar" style="display:flex;height:20px;border-radius:4px;overflow:hidden;margin-bottom:4px">
+        <div title="Bootstrap: ${formatMs(avg.bootstrapMs)} (${bootPct}%)" style="width:${bootPct}%;background:#f0883e;min-width:${avg.bootstrapMs > 0 ? '2px' : '0'}"></div>
+        <div title="LLM API: ${formatMs(avg.llmApiMs)} (${llmPct}%)" style="width:${llmPct}%;background:#58a6ff;min-width:${avg.llmApiMs > 0 ? '2px' : '0'}"></div>
+        <div title="Tool Exec: ${formatMs(avg.toolExecMs)} (${toolPct}%)" style="width:${toolPct}%;background:#3fb950;min-width:${avg.toolExecMs > 0 ? '2px' : '0'}"></div>
+        <div title="Overhead: ${formatMs(overheadMs)} (${overPct}%)" style="width:${overPct}%;background:#484f58;min-width:${overheadMs > 0 ? '2px' : '0'}"></div>
+      </div>
+      <div style="display:flex;gap:12px;font-size:11px;color:#8b949e;flex-wrap:wrap">
+        <span><span style="display:inline-block;width:8px;height:8px;background:#f0883e;border-radius:2px;margin-right:3px"></span>Boot ${formatMs(avg.bootstrapMs)}</span>
+        <span><span style="display:inline-block;width:8px;height:8px;background:#58a6ff;border-radius:2px;margin-right:3px"></span>LLM ${formatMs(avg.llmApiMs)}</span>
+        <span><span style="display:inline-block;width:8px;height:8px;background:#3fb950;border-radius:2px;margin-right:3px"></span>Tools ${formatMs(avg.toolExecMs)}</span>
+        <span><span style="display:inline-block;width:8px;height:8px;background:#484f58;border-radius:2px;margin-right:3px"></span>Other ${formatMs(overheadMs)}</span>
+      </div>
+    </div>`;
+
+    // Day-by-day table
+    if (p.days && p.days.length > 0) {
+      html += `<div style="margin-top:10px">
+        <table class="profile-table" style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="color:#7d8590;text-align:right">
+            <th style="text-align:left;padding:3px 6px">Day</th>
+            <th style="padding:3px 6px">Wall</th>
+            <th style="padding:3px 6px">Boot</th>
+            <th style="padding:3px 6px">LLM</th>
+            <th style="padding:3px 6px">Tools</th>
+          </tr></thead>
+          <tbody>`;
+      for (const d of p.days) {
+        const isFirst = d === p.days[0];
+        const rowStyle = isFirst ? 'color:#e6edf3;background:#1c2128' : 'color:#c9d1d9';
+        html += `<tr style="${rowStyle}">
+          <td style="text-align:left;padding:3px 6px">Day ${d.day}${isFirst ? ' <span style="color:#f0883e;font-size:10px">(cold)</span>' : ''}</td>
+          <td style="text-align:right;padding:3px 6px">${formatMs(d.wallMs)}</td>
+          <td style="text-align:right;padding:3px 6px">${formatMs(d.bootstrapMs)}</td>
+          <td style="text-align:right;padding:3px 6px">${formatMs(d.llmApiMs)}</td>
+          <td style="text-align:right;padding:3px 6px">${formatMs(d.toolExecMs)}</td>
+        </tr>`;
+      }
+      html += `</tbody></table></div>`;
+    }
+
+    // Cold start vs warm comparison
+    if (first && p.days.length > 1) {
+      const warmAvg = {
+        wallMs: Math.round((avg.wallMs * p.days.length - first.wallMs) / (p.days.length - 1)),
+        bootstrapMs: Math.round((avg.bootstrapMs * p.days.length - first.bootstrapMs) / (p.days.length - 1)),
+        llmApiMs: Math.round((avg.llmApiMs * p.days.length - first.llmApiMs) / (p.days.length - 1)),
+      };
+      html += `<div style="margin-top:8px;font-size:12px;color:#8b949e">
+        Cold start: ${formatMs(first.wallMs)} (boot: ${formatMs(first.bootstrapMs)})
+        &nbsp;|&nbsp; Warm avg: ${formatMs(warmAvg.wallMs)} (boot: ${formatMs(warmAvg.bootstrapMs)})
+      </div>`;
+    }
+
+    html += `</div>`;
+  }
+
+  // If a run is currently running, show live indicator
+  if (runningRuns.length > 0) {
+    html += `<div style="font-size:12px;color:#58a6ff;margin-top:8px">
+      <span style="display:inline-block;width:6px;height:6px;background:#58a6ff;border-radius:50%;margin-right:4px;animation:pulse 2s infinite"></span>
+      Eval running &mdash; profiling data will appear on completion
+    </div>`;
+  }
+
+  if (!html) {
+    html = '<p style="font-size:13px;color:#7d8590">No profiling data available. Run an eval to collect timing data.</p>';
+  }
+
+  return html;
 }
 
 function renderIntegrations(agent) {
@@ -894,17 +1088,14 @@ function formatMessageContent(html) {
 }
 
 // ---------------------------------------------------------------------------
-// Force-directed graph on canvas
+// Force-directed graph using SVG
 // ---------------------------------------------------------------------------
 
-function drawMemoryGraph(canvasId, graph) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  const container = canvas.parentElement;
-  canvas.width = container.clientWidth;
-  canvas.height = container.clientHeight;
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
+function drawMemoryGraph(containerId, graph) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const W = container.clientWidth;
+  const H = container.clientHeight;
 
   const typeColors = {
     core: "#58a6ff", daily: "#3fb950", topic: "#bc8cff",
@@ -924,45 +1115,31 @@ function drawMemoryGraph(canvasId, graph) {
   });
 
   // Simple force simulation
-  const edgeIndex = new Map();
-  graph.edges.forEach(e => { edgeIndex.set(e.source + "|" + e.target, e.weight); });
-
   function simulate() {
     const nodes = graph.nodes;
-    // Repulsion
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = positions[nodes[i].id], b = positions[nodes[j].id];
         let dx = b.x - a.x, dy = b.y - a.y;
         const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
         const force = 800 / (dist * dist);
-        a.vx -= (dx / dist) * force;
-        a.vy -= (dy / dist) * force;
-        b.vx += (dx / dist) * force;
-        b.vy += (dy / dist) * force;
+        a.vx -= (dx / dist) * force; a.vy -= (dy / dist) * force;
+        b.vx += (dx / dist) * force; b.vy += (dy / dist) * force;
       }
     }
-    // Attraction (edges)
     graph.edges.forEach(e => {
       const a = positions[e.source], b = positions[e.target];
       if (!a || !b) return;
       let dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const force = (dist - 80) * 0.03 * e.weight;
-      a.vx += (dx / dist) * force;
-      a.vy += (dy / dist) * force;
-      b.vx -= (dx / dist) * force;
-      b.vy -= (dy / dist) * force;
+      a.vx += (dx / dist) * force; a.vy += (dy / dist) * force;
+      b.vx -= (dx / dist) * force; b.vy -= (dy / dist) * force;
     });
-    // Center gravity
     nodes.forEach(n => {
       const p = positions[n.id];
       p.vx += (W / 2 - p.x) * 0.005;
       p.vy += (H / 2 - p.y) * 0.005;
-    });
-    // Update positions
-    nodes.forEach(n => {
-      const p = positions[n.id];
       p.vx *= 0.85; p.vy *= 0.85;
       p.x += p.vx; p.y += p.vy;
       p.x = Math.max(30, Math.min(W - 30, p.x));
@@ -970,44 +1147,75 @@ function drawMemoryGraph(canvasId, graph) {
     });
   }
 
-  function draw() {
-    ctx.clearRect(0, 0, W, H);
-    // Edges
-    ctx.lineWidth = 1;
-    graph.edges.forEach(e => {
-      const a = positions[e.source], b = positions[e.target];
+  // Create SVG
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  container.innerHTML = "";
+  container.appendChild(svg);
+
+  // Create SVG elements for edges
+  const edgeEls = graph.edges.map(e => {
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("stroke-width", "1");
+    svg.appendChild(line);
+    return { el: line, edge: e };
+  });
+
+  // Create SVG elements for nodes
+  const nodeEls = graph.nodes.map(n => {
+    const g = document.createElementNS(ns, "g");
+    const r = Math.max(6, Math.min(n.size * 0.6, 30));
+    const color = typeColors[n.type] || "#7d8590";
+    const glow = document.createElementNS(ns, "circle");
+    glow.setAttribute("r", r + 4);
+    glow.setAttribute("fill", color + "33");
+    g.appendChild(glow);
+    const circle = document.createElementNS(ns, "circle");
+    circle.setAttribute("r", r);
+    circle.setAttribute("fill", color);
+    g.appendChild(circle);
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("dy", r + 14);
+    label.setAttribute("fill", "#c9d1d9");
+    label.setAttribute("font-size", "10");
+    label.setAttribute("font-family", "monospace");
+    label.textContent = n.label;
+    g.appendChild(label);
+    const count = document.createElementNS(ns, "text");
+    count.setAttribute("text-anchor", "middle");
+    count.setAttribute("dy", r + 24);
+    count.setAttribute("fill", "#7d8590");
+    count.setAttribute("font-size", "9");
+    count.setAttribute("font-family", "monospace");
+    count.textContent = `${n.itemCount} items`;
+    g.appendChild(count);
+    svg.appendChild(g);
+    return { el: g, node: n, r };
+  });
+
+  function render() {
+    edgeEls.forEach(({ el, edge }) => {
+      const a = positions[edge.source], b = positions[edge.target];
       if (!a || !b) return;
-      ctx.strokeStyle = `rgba(88,166,255,${0.15 + e.weight * 0.3})`;
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      el.setAttribute("x1", a.x); el.setAttribute("y1", a.y);
+      el.setAttribute("x2", b.x); el.setAttribute("y2", b.y);
+      el.setAttribute("stroke", `rgba(88,166,255,${(0.15 + edge.weight * 0.3).toFixed(2)})`);
     });
-    // Nodes
-    graph.nodes.forEach(n => {
-      const p = positions[n.id];
-      const r = Math.max(6, Math.min(n.size * 0.6, 30));
-      const color = typeColors[n.type] || "#7d8590";
-      // Glow
-      ctx.fillStyle = color + "33";
-      ctx.beginPath(); ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2); ctx.fill();
-      // Node
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
-      // Label
-      ctx.fillStyle = "#c9d1d9";
-      ctx.font = "10px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(n.label, p.x, p.y + r + 14);
-      // Count
-      ctx.fillStyle = "#7d8590";
-      ctx.font = "9px monospace";
-      ctx.fillText(`${n.itemCount} items`, p.x, p.y + r + 24);
+    nodeEls.forEach(({ el, node }) => {
+      const p = positions[node.id];
+      el.setAttribute("transform", `translate(${p.x},${p.y})`);
     });
   }
 
-  // Run simulation
   let frames = 0;
   function tick() {
     simulate();
-    draw();
+    render();
     frames++;
     if (frames < 120) requestAnimationFrame(tick);
   }
@@ -1041,7 +1249,7 @@ async function renderCost() {
 
     <div class="panel">
       <h3>Cost Over Time (15-min intervals)</h3>
-      <div class="chart-container"><canvas id="cost-chart"></canvas></div>
+      <div class="chart-container" id="cost-chart"></div>
     </div>
 
     <div class="two-col">
@@ -1078,71 +1286,84 @@ async function renderCost() {
   setTimeout(() => drawCostChart("cost-chart", history), 50);
 }
 
-function drawCostChart(canvasId, history) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  const container = canvas.parentElement;
-  canvas.width = container.clientWidth;
-  canvas.height = container.clientHeight;
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
+function drawCostChart(containerId, history) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const W = container.clientWidth;
+  const H = container.clientHeight;
   const pad = { top: 20, right: 20, bottom: 40, left: 60 };
   const cW = W - pad.left - pad.right, cH = H - pad.top - pad.bottom;
 
-  if (history.length < 2) return;
+  if (history.length < 2) { container.innerHTML = ""; return; }
 
   const maxVal = Math.max(...history.map(h => h.totalUsd)) * 1.1 || 1;
 
-  // Grid
-  ctx.strokeStyle = "#21262d";
-  ctx.lineWidth = 1;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+
+  // Grid lines + Y labels
   for (let i = 0; i <= 4; i++) {
     const y = pad.top + (cH / 4) * i;
-    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
-    ctx.fillStyle = "#7d8590";
-    ctx.font = "10px monospace";
-    ctx.textAlign = "right";
-    ctx.fillText("$" + ((maxVal * (4 - i)) / 4).toFixed(1), pad.left - 8, y + 4);
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("x1", pad.left); line.setAttribute("y1", y);
+    line.setAttribute("x2", W - pad.right); line.setAttribute("y2", y);
+    line.setAttribute("stroke", "#21262d"); line.setAttribute("stroke-width", "1");
+    svg.appendChild(line);
+    const text = document.createElementNS(ns, "text");
+    text.setAttribute("x", pad.left - 8); text.setAttribute("y", y + 4);
+    text.setAttribute("text-anchor", "end");
+    text.setAttribute("fill", "#7d8590"); text.setAttribute("font-size", "10"); text.setAttribute("font-family", "monospace");
+    text.textContent = "$" + ((maxVal * (4 - i)) / 4).toFixed(1);
+    svg.appendChild(text);
   }
 
   // X labels
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#7d8590";
   const step = Math.max(1, Math.floor(history.length / 6));
   history.forEach((h, i) => {
     if (i % step !== 0 && i !== history.length - 1) return;
     const x = pad.left + (i / (history.length - 1)) * cW;
     const t = new Date(h.timestamp);
-    ctx.fillText(`${t.getHours()}:${String(t.getMinutes()).padStart(2, "0")}`, x, H - pad.bottom + 20);
+    const text = document.createElementNS(ns, "text");
+    text.setAttribute("x", x); text.setAttribute("y", H - pad.bottom + 20);
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("fill", "#7d8590"); text.setAttribute("font-size", "10"); text.setAttribute("font-family", "monospace");
+    text.textContent = `${t.getHours()}:${String(t.getMinutes()).padStart(2, "0")}`;
+    svg.appendChild(text);
   });
+
+  // Build points
+  const pts = history.map((h, i) => ({
+    x: pad.left + (i / (history.length - 1)) * cW,
+    y: pad.top + cH - (h.totalUsd / maxVal) * cH,
+  }));
+
+  // Fill area
+  const areaPath = document.createElementNS(ns, "polygon");
+  const areaPoints = pts.map(p => `${p.x},${p.y}`).join(" ") +
+    ` ${pts[pts.length - 1].x},${pad.top + cH} ${pts[0].x},${pad.top + cH}`;
+  areaPath.setAttribute("points", areaPoints);
+  areaPath.setAttribute("fill", "rgba(88,166,255,0.08)");
+  svg.appendChild(areaPath);
 
   // Line
-  ctx.strokeStyle = "#58a6ff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  history.forEach((h, i) => {
-    const x = pad.left + (i / (history.length - 1)) * cW;
-    const y = pad.top + cH - (h.totalUsd / maxVal) * cH;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // Fill under line
-  const lastX = pad.left + cW;
-  const baseline = pad.top + cH;
-  ctx.lineTo(lastX, baseline);
-  ctx.lineTo(pad.left, baseline);
-  ctx.closePath();
-  ctx.fillStyle = "#58a6ff15";
-  ctx.fill();
+  const polyline = document.createElementNS(ns, "polyline");
+  polyline.setAttribute("points", pts.map(p => `${p.x},${p.y}`).join(" "));
+  polyline.setAttribute("fill", "none"); polyline.setAttribute("stroke", "#58a6ff"); polyline.setAttribute("stroke-width", "2");
+  svg.appendChild(polyline);
 
   // Dots
-  ctx.fillStyle = "#58a6ff";
-  history.forEach((h, i) => {
-    const x = pad.left + (i / (history.length - 1)) * cW;
-    const y = pad.top + cH - (h.totalUsd / maxVal) * cH;
-    ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+  pts.forEach(p => {
+    const circle = document.createElementNS(ns, "circle");
+    circle.setAttribute("cx", p.x); circle.setAttribute("cy", p.y); circle.setAttribute("r", "3");
+    circle.setAttribute("fill", "#58a6ff");
+    svg.appendChild(circle);
   });
+
+  container.innerHTML = "";
+  container.appendChild(svg);
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,21 +1500,41 @@ async function renderEvalDetail(id) {
 // VIEW: Matrix (Variants x Evals)
 // ---------------------------------------------------------------------------
 
+let matrixRunMode = false;
+
 async function renderMatrix() {
   const content = $("#content");
-  content.innerHTML = `<div class="page-header"><h2>Eval Matrix</h2><p>Loading...</p></div>`;
+  content.innerHTML = `<div class="page-header"><h2>Dashboard</h2><p>Loading...</p></div>`;
 
-  const [variants, evals] = await Promise.all([api("/variants"), api("/evals")]);
+  const [variants, evals, agents, agentConfigs] = await Promise.all([
+    api("/variants"), api("/evals"), api("/agents"),
+    api("/agent-configs").catch(() => []),
+  ]);
 
   if (!variants.length && !evals.length) {
     content.innerHTML = `
-      <div class="page-header"><h2>Eval Matrix</h2><p>No data yet. Run some evals to populate the matrix.</p></div>`;
+      <div class="page-header"><h2>Dashboard</h2><p>No data yet. Run some evals to populate the matrix.</p></div>`;
     return;
   }
 
   // Build a lookup: evalId -> eval data
   const evalMap = {};
   evals.forEach(e => { evalMap[e.id] = e; });
+
+  // Map variant ID -> live agent IDs
+  const variantAgentMap = {};
+  (agents || []).forEach(a => {
+    if (a.status === "online" && a.memoryVariant) {
+      if (!variantAgentMap[a.memoryVariant]) variantAgentMap[a.memoryVariant] = [];
+      variantAgentMap[a.memoryVariant].push(a.id);
+    }
+  });
+
+  // Map variant ID -> config info (for spawning offline agents)
+  const variantConfigMap = {};
+  (agentConfigs || []).forEach(c => {
+    variantConfigMap[c.variantId] = c;
+  });
 
   // Collect all eval IDs we know about
   const evalIds = evals.map(e => e.id);
@@ -1303,19 +1544,16 @@ async function renderMatrix() {
     const ev = evalMap[evalId];
     if (!ev) return { status: "none" };
 
-    // Check for running runs matching this variant
     const runningRun = ev.recentRuns.find(r => r.status === "running" && r.memoryVariant === variant.id);
     if (runningRun) {
       return { status: "running", run: runningRun };
     }
 
-    // Check evalPerformance on the variant (percentage-based, 0-1)
     const perfScore = variant.evalPerformance[evalId];
     if (perfScore !== undefined) {
       return { status: "completed", score: perfScore, isPercentage: true };
     }
 
-    // Check recent runs for completed runs matching this variant
     const completedRun = ev.recentRuns
       .filter(r => r.status === "completed" && r.memoryVariant === variant.id)
       .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
@@ -1328,7 +1566,6 @@ async function renderMatrix() {
       return { status: "completed", score: pct, isPercentage: true };
     }
 
-    // Check for failed runs
     const failedRun = ev.recentRuns.find(r => r.status === "failed" && r.memoryVariant === variant.id);
     if (failedRun) return { status: "failed" };
 
@@ -1350,7 +1587,6 @@ async function renderMatrix() {
 
     if (data.status === "completed") {
       if (!data.isPercentage) {
-        // Simulation score — raw dollar value
         const formatted = typeof data.rawScore === "number"
           ? "$" + data.rawScore.toLocaleString("en-US", { maximumFractionDigits: 0 })
           : "$0";
@@ -1368,39 +1604,143 @@ async function renderMatrix() {
     return `<span class="matrix-cell cell-gray">—</span>`;
   }
 
+  // Count how many variants have live agents
+  const liveVariantCount = variants.filter(v => variantAgentMap[v.id]?.length).length;
+
   content.innerHTML = `
-    <div class="page-header">
-      <h2>Eval Matrix</h2>
-      <p>${variants.length} variants × ${evals.length} evals</p>
+    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <h2>Dashboard</h2>
+        <p>${variants.length} variants × ${evals.length} evals${liveVariantCount ? ` · ${liveVariantCount} live` : ""}</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="matrix-stop-all" class="matrix-run-toggle" style="border-color:#f8514955;color:#f85149" title="Stop all running agents">Stop All</button>
+        <button id="matrix-run-toggle" class="matrix-run-toggle${matrixRunMode ? " active" : ""}">${matrixRunMode ? "Exit Run Mode" : "Run Mode"}</button>
+      </div>
     </div>
-    <div class="panel" style="overflow-x:auto">
+
+    <div id="matrix-run-controls" class="matrix-run-controls" style="display:${matrixRunMode ? "block" : "none"}">
+      <div class="run-controls-row">
+        <div class="run-control-group">
+          <label>Length</label>
+          <div class="run-length-control">
+            <input type="text" id="run-length-pct" value="5" style="width:50px" />
+            <span id="run-length-label">% (18 days)</span>
+          </div>
+        </div>
+        <div class="run-control-group">
+          <label>Seed</label>
+          <input type="text" id="run-seed" placeholder="random" style="width:100px" />
+        </div>
+        <div class="run-control-group">
+          <label>Clock</label>
+          <select id="run-clock-speed">
+            <option value="fast">Fast</option>
+            <option value="real-world">Real-world</option>
+          </select>
+        </div>
+        <div class="run-control-group" style="margin-left:auto">
+          <button id="matrix-run-btn" class="matrix-run-btn" disabled>Run Selected (0)</button>
+        </div>
+      </div>
+      <div id="matrix-run-status" class="matrix-run-status"></div>
+    </div>
+
+    <div class="panel matrix-scroll-wrapper">
       <table class="matrix-table">
         <thead>
           <tr>
-            <th></th>
+            <th>${matrixRunMode ? '<input type="checkbox" id="matrix-select-all-variants" title="Select all variants" />' : ""}</th>
             ${evalIds.map(eid => {
               const ev = evalMap[eid];
-              return `<th class="matrix-col-header"><span class="badge cat-${ev.category}" style="font-size:10px;margin-right:4px">${ev.category.slice(0, 3)}</span> ${ev.name}</th>`;
+              const chk = matrixRunMode
+                ? `<input type="checkbox" class="matrix-eval-chk" data-eval-id="${eid}" title="Select ${ev.name}" />`
+                : "";
+              return `<th class="matrix-col-header">${chk}<span class="badge cat-${ev.category}" style="font-size:10px;margin-right:4px">${ev.category.slice(0, 3)}</span> ${ev.name}</th>`;
             }).join("")}
           </tr>
         </thead>
         <tbody>
-          ${variants.map(v => `
-            <tr>
-              <th class="matrix-row-header">${v.name} <span class="badge ${dimBadgeClass(v.dimensionality)}" style="font-size:10px">${v.dimensionality}</span></th>
+          ${variants.map(v => {
+            const hasLive = !!variantAgentMap[v.id]?.length;
+            const hasConfig = !!variantConfigMap[v.id];
+            const canRun = hasLive || hasConfig;
+            const chk = matrixRunMode
+              ? `<input type="checkbox" class="matrix-variant-chk" data-variant-id="${v.id}" ${canRun ? "" : "disabled title=\"No config available\""} />`
+              : "";
+            const dimmed = matrixRunMode && !canRun ? ' style="opacity:0.4"' : "";
+            const statusLabel = matrixRunMode && !hasLive && hasConfig
+              ? ' <span style="font-size:10px;color:#d29922">(will start)</span>'
+              : matrixRunMode && !canRun
+                ? ' <span style="font-size:10px;color:#484f58">(no config)</span>'
+                : "";
+            return `<tr${dimmed}>
+              <th class="matrix-row-header">${chk} ${v.name} <span class="badge ${dimBadgeClass(v.dimensionality)}" style="font-size:10px">${v.dimensionality}</span>${statusLabel}</th>
               ${evalIds.map(eid => `<td>${renderCell(v, eid)}</td>`).join("")}
-            </tr>
-          `).join("")}
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
+    </div>
+
+    <div id="matrix-charts" class="matrix-charts">
+      <div class="matrix-chart-panel">
+        <h3>Total Assets by Day</h3>
+        <div class="chart-container" id="chart-net-worth"></div>
+      </div>
+      <div class="matrix-chart-panel">
+        <h3>Estimated Cost (USD)</h3>
+        <div class="chart-container" id="chart-cost-matrix"></div>
+      </div>
+      <div class="matrix-chart-panel">
+        <h3>Elapsed Time</h3>
+        <div class="chart-container" id="chart-time"></div>
+      </div>
     </div>`;
 
+  // --- Run mode wiring ---
+  const toggleBtn = $("#matrix-run-toggle");
+  const controlsPanel = $("#matrix-run-controls");
+
+  toggleBtn.addEventListener("click", () => {
+    matrixRunMode = !matrixRunMode;
+    renderMatrix(); // re-render with checkboxes
+  });
+
+  // Stop All button
+  const stopAllBtn = $("#matrix-stop-all");
+  if (stopAllBtn) {
+    stopAllBtn.addEventListener("click", async () => {
+      stopAllBtn.disabled = true;
+      stopAllBtn.textContent = "Stopping...";
+      try {
+        await fetch("/api/stop-all", { method: "POST" });
+        stopAllBtn.textContent = "Stopped";
+      } catch {
+        stopAllBtn.textContent = "Failed";
+      }
+      setTimeout(() => {
+        stopAllBtn.disabled = false;
+        stopAllBtn.textContent = "Stop All";
+      }, 3000);
+    });
+  }
+
+  if (matrixRunMode) {
+    wireMatrixRunControls(variants, evalIds, evalMap, variantAgentMap, variantConfigMap);
+  }
+
+  // Initial chart draw
+  fetchAndDrawMatrixCharts();
+
   startPolling(async () => {
-    // Re-fetch data to update running states
     const [newVariants, newEvals] = await Promise.all([api("/variants"), api("/evals")]);
-    // Only update evals map for progress tracking — avoid full re-render
+    // Update eval data
     newEvals.forEach(e => { evalMap[e.id] = e; });
-    // Re-render cells in-place
+    // Update variant data — replace the captured variants array contents
+    variants.length = 0;
+    variants.push(...newVariants);
+
     const tbody = content.querySelector(".matrix-table tbody");
     if (tbody) {
       const rows = tbody.querySelectorAll("tr");
@@ -1413,7 +1753,528 @@ async function renderMatrix() {
         }
       });
     }
+
+    // Update charts
+    fetchAndDrawMatrixCharts();
   });
+}
+
+function wireMatrixRunControls(variants, evalIds, evalMap, variantAgentMap, variantConfigMap) {
+  const lengthSlider = $("#run-length-pct");
+  const lengthLabel = $("#run-length-label");
+  const runBtn = $("#matrix-run-btn");
+  const statusEl = $("#matrix-run-status");
+  const selectAllVariants = $("#matrix-select-all-variants");
+
+  function updateLengthLabel() {
+    const pct = Math.max(1, Math.min(100, parseInt(lengthSlider.value) || 5));
+    const days = Math.max(1, Math.round(365 * pct / 100));
+    lengthLabel.textContent = `% (${days} day${days !== 1 ? "s" : ""})`;
+  }
+
+  function getSelectedPairs() {
+    const selectedVariants = new Set();
+    document.querySelectorAll(".matrix-variant-chk:checked").forEach(cb => {
+      selectedVariants.add(cb.dataset.variantId);
+    });
+    const selectedEvals = new Set();
+    document.querySelectorAll(".matrix-eval-chk:checked").forEach(cb => {
+      selectedEvals.add(cb.dataset.evalId);
+    });
+    const pairs = [];
+    for (const vid of selectedVariants) {
+      const agentIds = variantAgentMap[vid];
+      const agentId = agentIds?.[0] || variantConfigMap[vid]?.agentId;
+      if (!agentId) continue;
+      const needsSpawn = !agentIds?.length;
+      for (const eid of selectedEvals) {
+        pairs.push({ variantId: vid, evalId: eid, agentId, needsSpawn });
+      }
+    }
+    return pairs;
+  }
+
+  function updateRunBtn() {
+    const pairs = getSelectedPairs();
+    runBtn.textContent = `Run Selected (${pairs.length})`;
+    runBtn.disabled = pairs.length === 0;
+  }
+
+  lengthSlider.addEventListener("input", updateLengthLabel);
+  lengthSlider.addEventListener("blur", () => {
+    const clamped = Math.max(1, Math.min(100, parseInt(lengthSlider.value) || 5));
+    lengthSlider.value = clamped;
+    updateLengthLabel();
+  });
+  updateLengthLabel();
+
+  // Checkbox change listeners
+  document.querySelectorAll(".matrix-variant-chk, .matrix-eval-chk").forEach(cb => {
+    cb.addEventListener("change", updateRunBtn);
+  });
+
+  // Select-all variants
+  if (selectAllVariants) {
+    selectAllVariants.addEventListener("change", () => {
+      const checked = selectAllVariants.checked;
+      document.querySelectorAll(".matrix-variant-chk:not(:disabled)").forEach(cb => {
+        cb.checked = checked;
+      });
+      updateRunBtn();
+    });
+  }
+
+  // Run button
+  runBtn.addEventListener("click", async () => {
+    const pairs = getSelectedPairs();
+    if (!pairs.length) return;
+
+    const pct = parseInt(lengthSlider.value);
+    const days = Math.max(1, Math.round(365 * pct / 100));
+    const seedStr = ($("#run-seed").value || "").trim();
+    const seed = seedStr ? parseInt(seedStr, 10) : undefined;
+    const clockSpeed = $("#run-clock-speed").value;
+
+    runBtn.disabled = true;
+    statusEl.innerHTML = "";
+
+    // Collect unique variants that need spawning
+    const variantsToSpawn = [...new Set(pairs.filter(p => p.needsSpawn).map(p => p.variantId))];
+
+    if (variantsToSpawn.length > 0) {
+      runBtn.textContent = `Starting ${variantsToSpawn.length} agent${variantsToSpawn.length > 1 ? "s" : ""}...`;
+      for (const vid of variantsToSpawn) {
+        try {
+          const res = await fetch("/api/agents/spawn", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ variantId: vid }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            const label = data.alreadyRunning ? "already running" : "started";
+            statusEl.innerHTML += `<div class="run-status-line run-ok">Agent ${data.agentId} ${label} (port ${data.port})</div>`;
+          } else {
+            statusEl.innerHTML += `<div class="run-status-line run-err">Failed to start agent for ${vid}: ${data.error}</div>`;
+          }
+        } catch (err) {
+          statusEl.innerHTML += `<div class="run-status-line run-err">Failed to start agent for ${vid}: ${err.message}</div>`;
+        }
+      }
+      // Poll until all spawned agents are registered (up to 30s)
+      const neededAgentIds = new Set(
+        pairs.filter(p => p.needsSpawn).map(p => p.agentId)
+      );
+      statusEl.innerHTML += `<div class="run-status-line" style="color:#7d8590" id="spawn-wait-status">Waiting for ${neededAgentIds.size} agent(s) to register...</div>`;
+      const waitStart = Date.now();
+      while (Date.now() - waitStart < 30000) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const agents = await api("/agents");
+          const onlineIds = new Set((agents || []).filter(a => a.status === "online").map(a => a.id));
+          const remaining = [...neededAgentIds].filter(id => !onlineIds.has(id));
+          const waitEl = document.getElementById("spawn-wait-status");
+          if (remaining.length === 0) {
+            if (waitEl) waitEl.textContent = "All agents registered.";
+            break;
+          }
+          const elapsed = Math.round((Date.now() - waitStart) / 1000);
+          if (waitEl) waitEl.textContent = `Waiting for ${remaining.length} agent(s) to register... (${elapsed}s)`;
+        } catch { break; }
+      }
+    }
+
+    runBtn.textContent = `Launching ${pairs.length} eval${pairs.length > 1 ? "s" : ""}...`;
+
+    let launched = 0;
+    let failed = 0;
+
+    for (const pair of pairs) {
+      const variant = variants.find(v => v.id === pair.variantId);
+      const variantName = variant ? variant.name : pair.variantId;
+      const ev = evalMap[pair.evalId];
+      const evalName = ev ? ev.name : pair.evalId;
+
+      try {
+        const res = await fetch(`/api/agents/${pair.agentId}/eval/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ evalId: pair.evalId, clockSpeed, days, seed }),
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          launched++;
+          statusEl.innerHTML += `<div class="run-status-line run-ok">${variantName} × ${evalName}: started (${data.runId})</div>`;
+        } else {
+          failed++;
+          statusEl.innerHTML += `<div class="run-status-line run-err">${variantName} × ${evalName}: ${data.error || res.statusText}</div>`;
+        }
+      } catch (err) {
+        failed++;
+        statusEl.innerHTML += `<div class="run-status-line run-err">${variantName} × ${evalName}: ${err.message}</div>`;
+      }
+    }
+
+    runBtn.textContent = `Done (${launched} launched${failed ? `, ${failed} failed` : ""})`;
+    setTimeout(() => updateRunBtn(), 5000);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Matrix Charts — live line charts for active eval runs
+// ---------------------------------------------------------------------------
+
+// Distinct colors for chart series
+const CHART_COLORS = [
+  "#58a6ff", // blue
+  "#3fb950", // green
+  "#d29922", // yellow
+  "#f85149", // red
+  "#bc8cff", // purple
+  "#f0883e", // orange
+  "#56d4dd", // cyan
+  "#db61a2", // pink
+];
+
+async function fetchAndDrawMatrixCharts() {
+  try {
+    // Use chart-history endpoint which combines live progress + persisted completed runs
+    const history = await api("/eval-chart-history");
+    const chartsEl = document.getElementById("matrix-charts");
+    if (!chartsEl) return;
+
+    if (!history || history.length === 0) {
+      chartsEl.style.display = "none";
+      return;
+    }
+    chartsEl.style.display = "";
+
+    drawMultiSeriesChart("chart-net-worth", history, "score", "$");
+    drawMultiSeriesChart("chart-cost-matrix", history, "costUsd", "$");
+    drawMultiSeriesChart("chart-time", history, "elapsedMs", "time");
+  } catch {}
+}
+
+function drawMultiSeriesChart(containerId, series, field, unit) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+  const pad = { top: 20, right: 16, bottom: 40, left: 65 };
+  const cW = W - pad.left - pad.right, cH = H - pad.top - pad.bottom;
+
+  const validSeries = series.filter(s =>
+    s.checkpoints.some(c => c[field] !== undefined && c[field] !== null)
+  );
+
+  if (validSeries.length === 0) {
+    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#484f58;font-size:12px">No data yet</div>';
+    return;
+  }
+
+  let maxDay = 0;
+  let minVal = Infinity, maxVal = -Infinity;
+  for (const s of validSeries) {
+    for (const c of s.checkpoints) {
+      if (c.day > maxDay) maxDay = c.day;
+      const v = c[field];
+      if (v !== undefined && v !== null) {
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+      }
+    }
+  }
+  if (maxDay === 0) maxDay = 1;
+  if (minVal === maxVal) { maxVal = minVal + 1; }
+  const yRange = maxVal - minVal;
+  const yMin = 0;
+  const yMax = maxVal + yRange * 0.1;
+
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+
+  // Grid lines + Y labels
+  const gridLines = 4;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = pad.top + (cH / gridLines) * i;
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("x1", pad.left); line.setAttribute("y1", y);
+    line.setAttribute("x2", W - pad.right); line.setAttribute("y2", y);
+    line.setAttribute("stroke", "#21262d"); line.setAttribute("stroke-width", "1");
+    svg.appendChild(line);
+    const text = document.createElementNS(ns, "text");
+    text.setAttribute("x", pad.left - 8); text.setAttribute("y", y + 4);
+    text.setAttribute("text-anchor", "end");
+    text.setAttribute("fill", "#7d8590"); text.setAttribute("font-size", "10"); text.setAttribute("font-family", "monospace");
+    const val = yMax - ((yMax - yMin) * i / gridLines);
+    text.textContent = formatChartValue(val, unit);
+    svg.appendChild(text);
+  }
+
+  // X axis labels
+  const xStep = Math.max(1, Math.ceil(maxDay / 8));
+  for (let d = xStep; d <= maxDay; d += xStep) {
+    const x = pad.left + (d / maxDay) * cW;
+    const text = document.createElementNS(ns, "text");
+    text.setAttribute("x", x); text.setAttribute("y", H - pad.bottom + 16);
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("fill", "#7d8590"); text.setAttribute("font-size", "10"); text.setAttribute("font-family", "monospace");
+    text.textContent = "D" + d;
+    svg.appendChild(text);
+  }
+
+  // Legend row at top
+  let legendX = pad.left;
+  validSeries.forEach((s, si) => {
+    const color = CHART_COLORS[si % CHART_COLORS.length];
+    const label = s.agentName || s.memoryVariant || s.agentId;
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", legendX); rect.setAttribute("y", 6);
+    rect.setAttribute("width", "10"); rect.setAttribute("height", "10");
+    rect.setAttribute("fill", color);
+    svg.appendChild(rect);
+    const text = document.createElementNS(ns, "text");
+    text.setAttribute("x", legendX + 14); text.setAttribute("y", 15);
+    text.setAttribute("fill", "#c9d1d9"); text.setAttribute("font-size", "10");
+    text.setAttribute("font-weight", "bold"); text.setAttribute("font-family", "system-ui, sans-serif");
+    text.textContent = label;
+    svg.appendChild(text);
+    // Estimate text width (roughly 6px per char at 10px bold)
+    legendX += 14 + label.length * 6.5 + 16;
+  });
+
+  // Draw each series
+  validSeries.forEach((s, si) => {
+    const color = CHART_COLORS[si % CHART_COLORS.length];
+    const points = s.checkpoints
+      .filter(c => c[field] !== undefined && c[field] !== null)
+      .map(c => ({
+        px: pad.left + (c.day / maxDay) * cW,
+        py: pad.top + cH - ((c[field] - yMin) / (yMax - yMin)) * cH,
+      }));
+
+    if (points.length === 0) return;
+
+    // Line
+    const polyline = document.createElementNS(ns, "polyline");
+    polyline.setAttribute("points", points.map(p => `${p.px},${p.py}`).join(" "));
+    polyline.setAttribute("fill", "none");
+    polyline.setAttribute("stroke", color);
+    polyline.setAttribute("stroke-width", "2");
+    svg.appendChild(polyline);
+
+    // Dots
+    points.forEach(p => {
+      const circle = document.createElementNS(ns, "circle");
+      circle.setAttribute("cx", p.px); circle.setAttribute("cy", p.py);
+      circle.setAttribute("r", "2.5");
+      circle.setAttribute("fill", color);
+      svg.appendChild(circle);
+    });
+  });
+
+  container.innerHTML = "";
+  container.appendChild(svg);
+}
+
+function formatChartValue(val, unit) {
+  if (unit === "$") {
+    if (Math.abs(val) >= 1000) return "$" + (val / 1000).toFixed(1) + "k";
+    return "$" + val.toFixed(val < 10 ? 2 : 0);
+  }
+  if (unit === "time") {
+    if (val >= 3600000) return (val / 3600000).toFixed(1) + "h";
+    if (val >= 60000) return (val / 60000).toFixed(1) + "m";
+    return (val / 1000).toFixed(0) + "s";
+  }
+  if (unit === "tokens") {
+    if (val >= 1e6) return (val / 1e6).toFixed(1) + "M";
+    if (val >= 1e3) return (val / 1e3).toFixed(0) + "K";
+    return String(Math.round(val));
+  }
+  return String(Math.round(val));
+}
+
+// ---------------------------------------------------------------------------
+// VIEW: Runs
+// ---------------------------------------------------------------------------
+
+let runsFilters = { evalId: "", variant: "", status: "" };
+
+async function renderRuns() {
+  const content = $("#content");
+  content.innerHTML = `<div class="page-header"><h2>Eval Runs</h2><p>Loading...</p></div>`;
+
+  const [runs, evalTypes] = await Promise.all([
+    api("/eval-runs"), api("/evals"),
+  ]);
+
+  // Build lookup maps
+  const evalNameMap = {};
+  evalTypes.forEach(e => { evalNameMap[e.id] = e.name; });
+  const uniqueEvals = [...new Set(runs.map(r => r.evalId))];
+  const uniqueVariants = [...new Set(runs.map(r => r.memoryVariant))];
+
+  function applyFilters(allRuns) {
+    return allRuns.filter(r => {
+      if (runsFilters.evalId && r.evalId !== runsFilters.evalId) return false;
+      if (runsFilters.variant && r.memoryVariant !== runsFilters.variant) return false;
+      if (runsFilters.status && r.status !== runsFilters.status) return false;
+      return true;
+    });
+  }
+
+  const activeRuns = runs.filter(r => r.status === "running");
+  const filtered = applyFilters(runs);
+
+  content.innerHTML = `
+    <div class="page-header">
+      <h2>Eval Runs</h2>
+      <p>${runs.length} total · ${activeRuns.length} active</p>
+    </div>
+
+    <div class="runs-filters">
+      <div class="run-control-group">
+        <label>Eval</label>
+        <select id="runs-filter-eval">
+          <option value="">All evals</option>
+          ${uniqueEvals.map(eid => `<option value="${eid}" ${runsFilters.evalId === eid ? "selected" : ""}>${evalNameMap[eid] || eid}</option>`).join("")}
+        </select>
+      </div>
+      <div class="run-control-group">
+        <label>Variant</label>
+        <select id="runs-filter-variant">
+          <option value="">All variants</option>
+          ${uniqueVariants.map(vid => `<option value="${vid}" ${runsFilters.variant === vid ? "selected" : ""}>${vid}</option>`).join("")}
+        </select>
+      </div>
+      <div class="run-control-group">
+        <label>Status</label>
+        <select id="runs-filter-status">
+          <option value="">All</option>
+          <option value="running" ${runsFilters.status === "running" ? "selected" : ""}>Running</option>
+          <option value="completed" ${runsFilters.status === "completed" ? "selected" : ""}>Completed</option>
+          <option value="failed" ${runsFilters.status === "failed" ? "selected" : ""}>Failed</option>
+        </select>
+      </div>
+      <div class="run-control-group" style="align-self:flex-end">
+        <span style="font-size:12px;color:#7d8590">${filtered.length} run${filtered.length !== 1 ? "s" : ""}</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <table class="data-table runs-table">
+        <thead><tr>
+          <th>Status</th><th>Eval</th><th>Agent</th><th>Variant</th><th>Progress</th><th>Score</th><th>Cost</th><th>Duration</th><th>Started</th><th></th>
+        </tr></thead>
+        <tbody id="runs-tbody">
+          ${renderRunsRows(filtered, evalNameMap)}
+        </tbody>
+      </table>
+    </div>`;
+
+  // Wire filters
+  ["runs-filter-eval", "runs-filter-variant", "runs-filter-status"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", () => {
+      runsFilters.evalId = document.getElementById("runs-filter-eval").value;
+      runsFilters.variant = document.getElementById("runs-filter-variant").value;
+      runsFilters.status = document.getElementById("runs-filter-status").value;
+      renderRuns();
+    });
+  });
+
+  // Poll for updates
+  startPolling(async () => {
+    try {
+      const newRuns = await api("/eval-runs");
+      const tbody = document.getElementById("runs-tbody");
+      if (tbody) {
+        const newFiltered = applyFilters(newRuns);
+        tbody.innerHTML = renderRunsRows(newFiltered, evalNameMap);
+        wireRunActions();
+      }
+    } catch {}
+  });
+
+  wireRunActions();
+}
+
+function renderRunsRows(runs, evalNameMap) {
+  if (runs.length === 0) {
+    return `<tr><td colspan="10" style="text-align:center;color:#484f58;padding:24px">No runs match the current filters</td></tr>`;
+  }
+  return runs.map(r => {
+    const isUnbounded = r.maxScore === -1;
+    const scoreDisplay = r.score !== undefined && r.status !== "running"
+      ? isUnbounded
+        ? formatDollars(r.score)
+        : `${r.score}/${r.maxScore} (${r.maxScore ? ((r.score / r.maxScore) * 100).toFixed(0) : 0}%)`
+      : r.status === "running" && r.progress?.score !== undefined
+        ? formatDollars(r.progress.score)
+        : "—";
+
+    const progressDisplay = r.progress
+      ? `Day ${r.progress.current}/${r.progress.total}`
+      : r.status === "completed" ? "Done" : r.status === "failed" ? "—" : "—";
+
+    const statusDot = r.status === "running" ? "online" : r.status === "completed" ? "online" : r.status === "failed" ? "error" : "offline";
+
+    const durationDisplay = r.completedAt && r.startedAt
+      ? formatDuration(new Date(r.completedAt) - new Date(r.startedAt))
+      : r.status === "running" && r.startedAt
+        ? formatDuration(Date.now() - new Date(r.startedAt).getTime()) + "..."
+        : "—";
+
+    const actions = r.status === "running"
+      ? `<button class="runs-action-btn runs-stop-btn" data-agent-id="${r.agentId}" data-run-id="${r.id}" title="Stop this eval">Stop</button>
+         <button class="runs-action-btn runs-pause-btn" disabled title="Pause (not yet implemented)">Pause</button>`
+      : "";
+
+    return `<tr class="${r.status === "running" ? "run-active-row" : ""}">
+      <td><span class="status-dot ${statusDot}" style="display:inline-block;vertical-align:middle"></span> ${r.status}</td>
+      <td><a href="#/eval/${r.evalId}">${evalNameMap[r.evalId] || r.evalId}</a></td>
+      <td><a href="#/agent/${r.agentId}">${r.agentName}</a></td>
+      <td><span class="variant-label">${r.memoryVariant}</span></td>
+      <td>${progressDisplay}</td>
+      <td>${scoreDisplay}</td>
+      <td>${r.costUsd !== undefined ? "$" + r.costUsd.toFixed(2) : "—"}</td>
+      <td>${durationDisplay}</td>
+      <td>${timeAgo(r.startedAt)}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join("");
+}
+
+function wireRunActions() {
+  document.querySelectorAll(".runs-stop-btn").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const agentId = btn.dataset.agentId;
+      btn.disabled = true;
+      btn.textContent = "Stopping...";
+      try {
+        await fetch(`/api/agents/${agentId}/eval/stop`, { method: "POST" });
+      } catch {}
+      setTimeout(() => renderRuns(), 1000);
+    });
+  });
+}
+
+function formatDuration(ms) {
+  if (ms < 0) return "—";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return sec + "s";
+  const min = Math.floor(sec / 60);
+  const remSec = sec % 60;
+  if (min < 60) return min + "m " + remSec + "s";
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return hr + "h " + remMin + "m";
 }
 
 // ---------------------------------------------------------------------------
@@ -1422,20 +2283,55 @@ async function renderMatrix() {
 
 async function renderVariants() {
   const content = $("#content");
-  const [variants, evals] = await Promise.all([api("/variants"), api("/evals")]);
+  const [variants, evals, agents] = await Promise.all([
+    api("/variants"), api("/evals"), api("/agents"),
+  ]);
 
   const evalNames = {};
   evals.forEach(e => { evalNames[e.id] = e.name; });
 
+  // Map variant -> agents
+  const variantAgents = {};
+  (agents || []).forEach(a => {
+    if (!a.memoryVariant) return;
+    if (!variantAgents[a.memoryVariant]) variantAgents[a.memoryVariant] = [];
+    variantAgents[a.memoryVariant].push(a);
+  });
+
+  const onlineCount = (agents || []).filter(a => a.status === "online").length;
+  const totalCost = (agents || []).reduce((s, a) => s + (a.costEstimatedUsd || 0), 0);
+
   content.innerHTML = `
-    <div class="page-header"><h2>Memory Architecture Variants</h2><p>${variants.length} variants under test</p></div>
+    <div class="page-header">
+      <h2>Variants</h2>
+      <p>${variants.length} variants · ${onlineCount} agent${onlineCount !== 1 ? "s" : ""} online · $${totalCost.toFixed(2)} total cost</p>
+    </div>
     <div class="grid">
       ${variants.map(v => {
         const perfEntries = Object.entries(v.evalPerformance);
+        const liveAgents = variantAgents[v.id] || [];
+        const hasOnline = liveAgents.some(a => a.status === "online");
+
+        // Agent status section
+        const agentHtml = liveAgents.length > 0 ? liveAgents.map(a => {
+          const pct = a.contextTokensAvailable > 0 ? (a.contextTokensUsed / a.contextTokensAvailable) * 100 : 0;
+          return `
+            <a href="#/agent/${a.id}" class="variant-agent-link">
+              <div class="status-dot ${a.status}" style="display:inline-block;vertical-align:middle"></div>
+              <strong>${a.name}</strong>
+              <span style="color:#7d8590;font-size:11px">
+                ${formatUptime(a.uptimeSeconds)} · ${a.messagesProcessed} msgs · $${a.costEstimatedUsd.toFixed(2)}
+              </span>
+            </a>`;
+        }).join("") : "";
+
         return `
         <div class="card" style="cursor:default">
           <div class="card-header">
-            <span class="agent-name">${v.name}</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              ${hasOnline ? '<div class="status-dot online" style="display:inline-block"></div>' : ''}
+              <span class="agent-name">${v.name}</span>
+            </div>
             <span class="badge ${dimBadgeClass(v.dimensionality)}">${v.dimensionality}</span>
           </div>
           <p style="font-size:12px;color:#7d8590;margin-bottom:10px;line-height:1.4">${v.description.slice(0, 150)}${v.description.length > 150 ? "..." : ""}</p>
@@ -1443,8 +2339,13 @@ async function renderVariants() {
             <div class="stat-item"><span class="label">write</span> <span class="value" style="font-size:11px">${v.writePolicy.slice(0, 30)}</span></div>
             <div class="stat-item"><span class="label">storage</span> <span class="value" style="font-size:11px">${v.storageType.slice(0, 30)}</span></div>
             <div class="stat-item"><span class="label">retrieval</span> <span class="value" style="font-size:11px">${v.retrievalMethod.slice(0, 30)}</span></div>
-            <div class="stat-item"><span class="label">agents</span> <span class="value">${v.agents.length}</span></div>
           </div>
+          ${agentHtml ? `
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">
+              <h4 style="font-size:11px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Agents</h4>
+              ${agentHtml}
+            </div>
+          ` : ""}
           ${perfEntries.length > 0 ? `
             <div style="margin-top:12px;padding-top:12px;border-top:1px solid #30363d">
               <h4 style="font-size:11px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Eval Performance</h4>
