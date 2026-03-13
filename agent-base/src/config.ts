@@ -31,7 +31,16 @@ export const AgentBaseConfigSchema = z.object({
   // Model settings
   provider: z.string().default("anthropic"),
   model: z.string().default("claude-sonnet-4-6"),
+  modelParams: z.record(z.string(), z.unknown()).default({}),
+  thinkingDefault: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(),
   pricing: ModelPricingSchema.default({}),
+
+  // Eval-side LLMs used by external simulations (for supplier/vendor actors, search classifiers, etc.)
+  evalUseLlmSuppliers: z.boolean().default(true),
+  evalSupplierProvider: z.string().optional(),
+  evalSupplierModel: z.string().optional(),
+  evalSearchProvider: z.string().optional(),
+  evalSearchModel: z.string().optional(),
 
   // Cost caps
   costCap: CostCapSchema.default({}),

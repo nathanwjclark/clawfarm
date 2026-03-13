@@ -12,6 +12,7 @@ import type {
   RunMetrics,
 } from "../evals/external-eval-definition.js";
 import type { EvalRunResult } from "../types.js";
+import { getRequiredEvalProviderEnvVars } from "../provider-auth.js";
 
 export interface ExternalEvalRunOptions {
   days?: number;
@@ -50,9 +51,10 @@ export class ExternalEvalRunner {
    * Returns { ok: true } or { ok: false, error: string }.
    */
   async preflight(evalDef: ExternalEvalDefinition): Promise<{ ok: boolean; error?: string }> {
-    // Check API key
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return { ok: false, error: "ANTHROPIC_API_KEY environment variable is not set" };
+    for (const envVar of getRequiredEvalProviderEnvVars(this.config)) {
+      if (!process.env[envVar]?.trim()) {
+        return { ok: false, error: `${envVar} environment variable is not set` };
+      }
     }
 
     // Check openclaw directory
@@ -155,9 +157,22 @@ export class ExternalEvalRunner {
 
     try {
       await new Promise<void>((resolve, reject) => {
+        const supplierProvider = this.config.evalSupplierProvider ?? this.config.provider;
+        const supplierModel = this.config.evalSupplierModel ?? this.config.model;
+        const searchProvider = this.config.evalSearchProvider ?? supplierProvider;
+        const searchModel = this.config.evalSearchModel ?? supplierModel;
         this.childProcess = spawn(evalDef.command, resolvedArgs, {
           cwd: evalWorkspace,
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            VENDING_BENCH_PROVIDER: this.config.provider,
+            VENDING_BENCH_MODEL: this.config.model,
+            VENDING_BENCH_SUPPLIER_PROVIDER: supplierProvider,
+            VENDING_BENCH_SUPPLIER_MODEL: supplierModel,
+            VENDING_BENCH_SEARCH_PROVIDER: searchProvider,
+            VENDING_BENCH_SEARCH_MODEL: searchModel,
+            VENDING_BENCH_USE_LLM_SUPPLIERS: String(this.config.evalUseLlmSuppliers !== false),
+          },
           stdio: ["ignore", "pipe", "pipe"],
         });
 

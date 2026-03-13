@@ -52,10 +52,12 @@ Each agent variant runs the same OpenClaw engine but with a different memory bac
 - **native-0D**: Flat file storage (baseline)
 - **three-layer-1d**: Three-layer file routing with LLM-driven consolidation
 - **five-day-1d**: Boot-discipline memory with learnings, handover, and backend-owned recall
+- **five-day-1d-cerebras-glm47**: Five-day memory plus Cerebras `zai-glm-4.7`
 
 The memory backend is swappable via the `MemoryBackend` interface in agent-base. Each variant registers with the farm and reports heartbeats.
 Backends now own their workspace composition and eval persona overlays rather than relying on generic root-file seeding outside the memory layer.
 Backends also own prompt-time recall and in-turn memory storage through an HTTP bridge that OpenClaw's memory tools call into.
+Agent-base is now provider-aware instead of Anthropic-only: it provisions auth and eval preflight checks from the configured model provider, and it passes eval-side supplier/search model settings into external eval subprocesses.
 
 ### Farm Dashboard
 
@@ -119,7 +121,7 @@ When the farm dispatches an eval, `EvalBridge` in agent-base:
       plugin/                  (openclaw plugin: tool definitions for the sim)
       simulation/              (world state, demand model, events, scoring)
       tools/                   (direct-mode tool implementations)
-      llm/                     (direct Anthropic API client)
+      llm/                     (provider-aware Anthropic/Cerebras client)
     test/
 
   openclaw/                    (separate repo — the agent engine)
@@ -184,3 +186,7 @@ npm run test:agent     # 95 tests
 # Vending-bench (separate repo)
 cd ../vending-bench && npx vitest run   # 112 tests
 ```
+
+Recent live checks:
+
+- `five-day-1d-cerebras-glm47` completed a real 1-day `vending-bench` agent-mode run.

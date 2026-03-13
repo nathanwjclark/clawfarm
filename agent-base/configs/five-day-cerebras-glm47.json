@@ -1,0 +1,22 @@
+{
+  "agentId": "agent-5day-cb-glm47",
+  "agentName": "five-day-cerebras-glm47",
+  "memoryVariant": "five-day-1d-cerebras-glm47",
+  "mode": "eval",
+  "farmDashboardUrl": "http://localhost:3847",
+  "workspaceDir": "/tmp/clawfarm/workspaces/agent-5day-cb-glm47",
+  "port": 3903,
+  "provider": "cerebras",
+  "model": "zai-glm-4.7",
+  "modelParams": {
+    "temperature": 0.45,
+    "thinking": "off"
+  },
+  "thinkingDefault": "off",
+  "evalSupplierProvider": "cerebras",
+  "evalSupplierModel": "zai-glm-4.7",
+  "evalSearchProvider": "cerebras",
+  "evalSearchModel": "zai-glm-4.7",
+  "openclawDir": "../../../openclaw",
+  "externalEvalDirs": ["../../../vending-bench"]
+}

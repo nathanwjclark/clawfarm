@@ -15,6 +15,7 @@ import type {
 import type { EvalRunResult } from "../types.js";
 import type { ChatHandler } from "./chat-handler.js";
 import type { MemoryBackend } from "../memory/memory-backend.js";
+import { getRequiredEvalProviderEnvVars } from "../provider-auth.js";
 
 export interface EvalBridgeRunOptions {
   days?: number;
@@ -91,9 +92,10 @@ export class EvalBridge {
    * Preflight check: validates that the environment is ready.
    */
   async preflight(evalDef: ExternalEvalDefinition): Promise<{ ok: boolean; error?: string }> {
-    // Check API key
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return { ok: false, error: "ANTHROPIC_API_KEY environment variable is not set" };
+    for (const envVar of getRequiredEvalProviderEnvVars(this.config)) {
+      if (!process.env[envVar]?.trim()) {
+        return { ok: false, error: `${envVar} environment variable is not set` };
+      }
     }
 
     // Check openclaw directory
@@ -224,9 +226,22 @@ export class EvalBridge {
       await new Promise<void>((resolve, reject) => {
         // Run from the eval's own directory so npx can find its node_modules
         const spawnCwd = evalDir || evalWorkspace;
+        const supplierProvider = this.config.evalSupplierProvider ?? this.config.provider;
+        const supplierModel = this.config.evalSupplierModel ?? this.config.model;
+        const searchProvider = this.config.evalSearchProvider ?? supplierProvider;
+        const searchModel = this.config.evalSearchModel ?? supplierModel;
         this.childProcess = spawn(evalDef.command, resolvedArgs, {
           cwd: spawnCwd,
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            VENDING_BENCH_PROVIDER: this.config.provider,
+            VENDING_BENCH_MODEL: this.config.model,
+            VENDING_BENCH_SUPPLIER_PROVIDER: supplierProvider,
+            VENDING_BENCH_SUPPLIER_MODEL: supplierModel,
+            VENDING_BENCH_SEARCH_PROVIDER: searchProvider,
+            VENDING_BENCH_SEARCH_MODEL: searchModel,
+            VENDING_BENCH_USE_LLM_SUPPLIERS: String(this.config.evalUseLlmSuppliers !== false),
+          },
           stdio: ["ignore", "pipe", "pipe"],
         });
 
@@ -270,13 +285,10 @@ export class EvalBridge {
               llmApiMs: parseInt(profileMatch[7], 10),
               toolExecMs: parseInt(profileMatch[8], 10),
             });
-            // If there's a pending report for this day, flush it now with profile attached.
-            // [PROFILE_CALLS] may follow on the next line and add llmCallProfiles to the
-            // dayProfiles entry before the next progress line triggers a flush.
-            if (pendingProgressReport && pendingProgressReport.day === day) {
-              flushProgress(pendingProgressReport);
-              pendingProgressReport = null;
-            }
+            // Don't flush immediately — [PROFILE_CALLS] may follow on the next line.
+            // The pending report will be flushed when the next day's progress line
+            // arrives (line below) or when the process closes, by which time both
+            // [PROFILE] and [PROFILE_CALLS] data will be in dayProfiles.
           }
 
           // Parse [PROFILE_CALLS] lines for per-LLM-call data

@@ -11,6 +11,7 @@ import type {
   AgentEvalSummary,
 } from "./types.js";
 import { SIM_MESSAGES, SIM_MEMORY_GRAPH } from "./sim-data.js";
+import { discoverAgentConfigs } from "./agent-spawner.js";
 
 // SIMULATED: All data in this file is mock data for dashboard development.
 // Each function documents what real data source it should be replaced with.
@@ -407,32 +408,90 @@ export function getSimulatedAgentEvalSummary(agentId: string): AgentEvalSummary 
 // MEMORY VARIANTS
 // ---------------------------------------------------------------------------
 
-// Implemented variant definitions — always loaded regardless of mode.
-// These are real memory backends with agent-base configs.
-const IMPLEMENTED_VARIANTS: MemoryVariant[] = [
-  {
-    id: "native-0d", name: "Native Baseline", dimensionality: "0D",
+type VariantMetadata = Omit<MemoryVariant, "id" | "agents" | "evalPerformance">;
+
+// Real implemented variants are discovered from agent-base/configs/.
+// This metadata map only supplies display details for known variants.
+const IMPLEMENTED_VARIANT_METADATA: Record<string, VariantMetadata> = {
+  "native-0d": {
+    name: "Native Baseline",
+    dimensionality: "0D",
     description: "OpenClaw's default memory: flat Markdown files, LLM-directed writes, hybrid BM25+vector retrieval. No consolidation or structure.",
-    writePolicy: "LLM-directed (tool-based)", storageType: "Markdown files", retrievalMethod: "Hybrid BM25 + Vector",
-    agents: [], evalPerformance: {},
+    writePolicy: "LLM-directed (tool-based)",
+    storageType: "Markdown files",
+    retrievalMethod: "Hybrid BM25 + Vector",
   },
-  {
-    id: "three-layer-1d", name: "Three-Layer", dimensionality: "1D",
+  "three-layer-1d": {
+    name: "Three-Layer",
+    dimensionality: "1D",
     description: "Three-tier memory architecture: scratchpad (ephemeral working memory), session summaries (medium-term), and core facts (long-term). Automatic promotion between tiers based on relevance and frequency.",
-    writePolicy: "Tiered auto-promotion (scratchpad → session → core)", storageType: "Markdown files (3 tiers)", retrievalMethod: "Tier-aware hybrid search",
-    agents: [], evalPerformance: {},
+    writePolicy: "Tiered auto-promotion (scratchpad → session → core)",
+    storageType: "Markdown files (3 tiers)",
+    retrievalMethod: "Tier-aware hybrid search",
   },
-  {
-    id: "five-day-1d", name: "Five-Day Window", dimensionality: "1D",
+  "five-day-1d": {
+    name: "Five-Day Window",
+    dimensionality: "1D",
     description: "Rolling 5-day memory window with daily consolidation. Each day's interactions are summarized and older days are compressed or dropped. Optimized for simulation evals with strong recency bias.",
-    writePolicy: "Daily consolidation + rolling window", storageType: "Day-indexed Markdown files", retrievalMethod: "Recency-weighted hybrid search",
-    agents: [], evalPerformance: {},
+    writePolicy: "Daily consolidation + rolling window",
+    storageType: "Day-indexed Markdown files",
+    retrievalMethod: "Recency-weighted hybrid search",
   },
-];
+  "five-day-1d-cerebras-glm47": {
+    name: "Five-Day GLM 4.7",
+    dimensionality: "1D",
+    description: "Five-day memory architecture running on Cerebras-hosted GLM-4.7 for high-throughput evals. Same backend semantics as five-day-1d with a faster hosted model.",
+    writePolicy: "Daily consolidation + rolling window",
+    storageType: "Day-indexed Markdown files",
+    retrievalMethod: "Recency-weighted hybrid search",
+  },
+};
+
+function titleCaseVariantId(variantId: string): string {
+  return variantId
+    .split("-")
+    .map((part) => part.length === 0 ? part : part[0].toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function inferDimensionality(variantId: string): MemoryVariant["dimensionality"] {
+  if (variantId.includes("2d+")) return "2D+";
+  if (variantId.includes("2d")) return "2D";
+  if (variantId.includes("1d")) return "1D";
+  return "0D";
+}
+
+function buildImplementedVariant(variantId: string): MemoryVariant {
+  const metadata = IMPLEMENTED_VARIANT_METADATA[variantId];
+  if (metadata) {
+    return {
+      id: variantId,
+      ...metadata,
+      agents: [],
+      evalPerformance: {},
+    };
+  }
+
+  return {
+    id: variantId,
+    name: titleCaseVariantId(variantId),
+    dimensionality: inferDimensionality(variantId),
+    description: "",
+    writePolicy: "",
+    storageType: "",
+    retrievalMethod: "",
+    agents: [],
+    evalPerformance: {},
+  };
+}
+
+function getDiscoveredImplementedVariants(): MemoryVariant[] {
+  const variantIds = [...new Set(discoverAgentConfigs().map((config) => config.variantId))];
+  return variantIds.map(buildImplementedVariant);
+}
 
 // Demo-only mock variants — placeholder architectures for UI development.
 const MOCK_VARIANTS: MemoryVariant[] = [
-  ...IMPLEMENTED_VARIANTS,
   {
     id: "native-0d-tuned", name: "Native Tuned (0D)", dimensionality: "0D",
     description: "OpenClaw native with flush enabled, higher reserveTokensFloor, tuned hybrid weights. Same architecture, better defaults.",
@@ -478,15 +537,15 @@ const MOCK_VARIANTS: MemoryVariant[] = [
 ];
 
 export function getSimulatedVariants(): MemoryVariant[] {
-  return MOCK_VARIANTS;
+  return [...getDiscoveredImplementedVariants(), ...MOCK_VARIANTS];
 }
 
 export function getImplementedVariants(): MemoryVariant[] {
-  return IMPLEMENTED_VARIANTS;
+  return getDiscoveredImplementedVariants();
 }
 
 export function getSimulatedVariant(id: string): MemoryVariant | undefined {
-  return MOCK_VARIANTS.find((v) => v.id === id);
+  return getSimulatedVariants().find((v) => v.id === id);
 }
 
 // ---------------------------------------------------------------------------

@@ -36,9 +36,11 @@ Each agent variant uses the same OpenClaw engine with a different memory backend
 - **native-0D** — flat file storage (baseline)
 - **three-layer-1d** — L1/L2/L3 file-routing architecture with explicit consolidation
 - **five-day-1d** — boot discipline, learnings, handover, and backend-owned recall
+- **five-day-1d-cerebras-glm47** — the five-day backend on Cerebras `zai-glm-4.7`
 
 Backend implementations live under `agent-base/src/memory/variants/`, with shared memory interfaces and factory code kept in `agent-base/src/memory/`.
 OpenClaw exposes the generic memory tool surface, but prompt-time recall plus in-turn memory storage and retrieval now route through the selected Clawfarm backend over an external memory bridge.
+For eval runs, agent-base now narrows OpenClaw to the eval's sim tools plus backend memory tools instead of exposing the full coding tool surface.
 
 ## Evals
 
@@ -60,8 +62,15 @@ npm run test:agent     # 95 tests
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set your API key:
+Copy `.env.example` to `.env` and set the provider key for the agent you want to run:
 
 ```
-CLAUDE_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=sk-ant-...
+CEREBRAS_API_KEY=...
 ```
+
+Useful configs:
+
+- `agent-base/configs/example.json`
+- `agent-base/configs/five-day.json`
+- `agent-base/configs/five-day-cerebras-glm47.json`

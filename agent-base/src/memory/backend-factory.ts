@@ -19,6 +19,7 @@ export function createMemoryBackend(
     case "three-layer-1d":
       return new ThreeLayerBackend(config);
     case "five-day-1d":
+    case "five-day-1d-cerebras-glm47":
       return new FiveDayBackend(config);
     case "mem0-1d":
     case "mem0-1d-aggressive":

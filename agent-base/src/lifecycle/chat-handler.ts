@@ -6,6 +6,7 @@ import type { AgentBaseConfig } from "../config.js";
 import type { SimRegistry } from "../integrations/sim-registry.js";
 import type { MemoryBackend } from "../memory/memory-backend.js";
 import type { AgentMonitor } from "../monitoring/agent-monitor.js";
+import { resolveProviderApiKey } from "../provider-auth.js";
 import type { AgentMessage } from "../types.js";
 
 /**
@@ -40,6 +41,7 @@ interface AgentCliResult {
         toolExecMs?: number;
         llmCallCount?: number;
         toolExecCount?: number;
+        llmCallProfiles?: LlmCallProfile[];
       };
     };
     error?: { kind: string; message: string };
@@ -271,7 +273,7 @@ export class ChatHandler {
    * that points at the agent's workspace. This makes openclaw read/write
    * memory files in our controlled directory instead of ~/.openclaw/workspace.
    *
-   * When eval plugin is configured, includes plugins.load.paths and tools.alsoAllow.
+   * When eval plugin is configured, includes plugins.load.paths and a narrowed tool allowlist.
    *
    * Config goes to $OPENCLAW_HOME/.openclaw/openclaw.json (openclaw's state dir).
    */
@@ -289,19 +291,37 @@ export class ChatHandler {
 
         // Set model from agent-base config (e.g. "anthropic/claude-sonnet-4-6")
         const agentDefaults = (configObj.agents as Record<string, any>)?.defaults ?? {};
-        agentDefaults.model = { primary: `${this.config.provider}/${this.config.model}` };
+        const modelKey = `${this.config.provider}/${this.config.model}`;
+        agentDefaults.model = { primary: modelKey };
+        agentDefaults.models = {
+          ...(agentDefaults.models ?? {}),
+          [modelKey]: {
+            ...(agentDefaults.models?.[modelKey] ?? {}),
+            ...(Object.keys(this.config.modelParams).length > 0
+              ? { params: this.config.modelParams }
+              : {}),
+          },
+        };
+        if (this.config.thinkingDefault) {
+          agentDefaults.thinkingDefault = this.config.thinkingDefault;
+        }
         (configObj.agents as Record<string, any>).defaults = agentDefaults;
 
         // If eval plugin is configured, add plugin paths and tool allow-list
         if (this.evalPluginConfig) {
           const pluginDir = path.resolve(this.evalPluginConfig.pluginDir);
+          const evalAllowedTools = [
+            ...this.evalPluginConfig.tools,
+            "memory_search",
+            "memory_get",
+            "memory_write",
+          ];
           configObj.plugins = {
             enabled: true,
             load: { paths: [pluginDir] },
           };
           configObj.tools = {
-            profile: "full",
-            alsoAllow: this.evalPluginConfig.tools,
+            allow: [...new Set(evalAllowedTools)],
           };
         }
 
@@ -421,11 +441,10 @@ export class ChatHandler {
   }
 
   /**
-   * Provision openclaw's auth-profiles.json from the ANTHROPIC_API_KEY env var.
-   * Adapted from vending-bench's battle-tested chat-handler.
+   * Provision openclaw's auth-profiles.json from the configured provider's API key.
    */
   private async provisionAuthProfiles(openclawHome: string): Promise<void> {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = resolveProviderApiKey(this.config.provider);
     if (!apiKey) return;
 
     const agentDir = path.join(openclawHome, ".openclaw", "agents", "main", "agent");
@@ -434,9 +453,9 @@ export class ChatHandler {
     const authStore = {
       version: 1,
       profiles: {
-        "anthropic:default": {
+        [`${this.config.provider}:default`]: {
           type: "api_key",
-          provider: "anthropic",
+          provider: this.config.provider,
           key: apiKey,
         },
       },

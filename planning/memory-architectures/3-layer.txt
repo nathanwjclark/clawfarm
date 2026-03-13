@@ -1,0 +1,137 @@
+I run a multi-agent operation on OpenClaw for my real estate business. Compliance, lead qualification, deal analysis, social media, transaction coordination. Each agent has its own workspace and its own job.
+
+For months, every session started from zero. I'd ask an agent where we were on something and they'd have nothing. No context. No thread to pull. I'd re-explain from the beginning. Every single time.
+
+The cost wasn't just my time. It was trust. When your agent can't remember what you discussed yesterday, you stop treating it like a team member and start treating it like a tool. In real estate, the cost was concrete: an agent treating a warm lead like a stranger, missing a deadline because there was no state to check, making the same mistakes a previous session had already corrected.
+
+So I built a memory architecture on top of OpenClaw's workspace and memory infrastructure. Three layers, five triggers, and a set of rules that turned context loss from a daily problem into something that almost never happens.
+
+The 3-Layer Architecture
+Each layer has one job. Information flows down. Never duplicated across layers.
+
+L1: Brain (root workspace files, injected every turn)
+OpenClaw injects a fixed set of workspace files as project context into every turn automatically. These are your agent's operating system. Seven files:
+
+SOUL.md: personality, voice, values. Not instructions or rules
+
+AGENTS.md: role, rules, lane. Not personality or project status
+
+MEMORY.md: what's active right now. One line per item, present tense. Not history
+
+USER.md: how the user thinks and what they need. Only what changes agent behavior
+
+TOOLS.md: machine-specific commands and workarounds. Not general docs
+
+IDENTITY.md: name, role, quick reference
+
+HEARTBEAT.md: standing tasks for recurring checks. Not project details
+
+Budget (our rule, not OpenClaw's): OpenClaw allows up to 20,000 characters per file. But we learned that bloated files get skimmed. The agent starts missing instructions. We set a target of 500 to 1,000 tokens per file, keeping total L1 under 7,000 tokens. This keeps it cost-efficient and ensures the agent actually reads everything instead of skimming. Run trim (more on that below) to enforce this.
+
+Stability rule: Only you or a checkpoint updates L1 files. Agents don't randomly change their own rules. Exception: MEMORY.md can update to reflect current state.
+
+L1 is the difference between your agent waking up knowing who it is versus waking up as a stranger in a room full of context it can't access.
+
+L2: Memory (memory/, searched semantically by OpenClaw)
+Your long-term recall. OpenClaw has a built-in memory_search tool that semantically searches across MEMORY.md and everything inside the memory/ directory. This is native to OpenClaw. When your agent is asked about prior work, decisions, or context, it searches L2 automatically. You don't need to add a rule for this. It just works.
+
+Two types of files live here:
+
+Daily notes: memory/YYYY-MM-DD.md. This is an OpenClaw convention. Session history, decisions made, completed work, corrections locked. What actually happened. Not what was planned.
+
+Breadcrumb files: memory/[topic-name].md. These are our addition. Curated facts organized by situation, not by source. 4KB max per file. One fact per line. Every key fact includes a pointer to L3: ‚Üí Deep dive: reference/filename.md
+
+Breadcrumbs are the bridge between L2 and L3. Search finds the breadcrumb. The breadcrumb points to the depth. This way your agent doesn't need to load a full reference doc just to remember one relevant fact.
+
+Critical insight: L2 accuracy depends entirely on what gets written into it. If an agent takes an action and doesn't capture it before moving on, the state file starts lying. You end up with a system that confidently returns stale information.
+
+L3: Reference (reference/, opened on demand)
+This is entirely our addition. Not an OpenClaw convention. We created a reference/ directory for deep context: SOPs, frameworks, playbooks, research.
+
+Agents reach into L3 on demand when a specific task requires depth. It's not searched by memory_search and that's by design. You'd burn context loading things that rarely matter. L3 exists so your agent knows where to look when it needs something specific, not so it carries everything at all times.
+
+The flow:
+L1 (always loaded) ‚Üí search L2 (memory) ‚Üí open L3 (reference) on demand
+Never duplicate across layers. Pointer in L1 replaces content. Breadcrumb in L2 replaces opening L3 blindly.
+
+The Five Triggers
+These are our invention, not an OpenClaw feature. Five words that run full protocols. We built them and enforce them.
+
+recover
+Full context rebuild. For post-reset, post-compaction, or when the agent has lost the thread.
+
+The agent finds its most recent session transcript, pulls the last 5-10 messages, uses what it finds as a search signal: names, topics, deals, tasks. Then it searches L2: daily notes, breadcrumb files, standing topic files. If any L2 file points deeper, it follows the pointer into L3.
+
+Synthesizes what's active, what's unfinished, what direction things were heading. Never asks for the full picture. Never comes back empty.
+
+This is the trigger that actually solved the "starting from zero" problem.
+
+checkpoint
+Captures what actually happened this session. Routes by content type:
+
+Content Type	Routes To
+Behavioral rule / operational instruction	AGENTS.md
+Tool command or workaround	TOOLS.md
+Communication or preference change	USER.md
+Active state (what's live now)	MEMORY.md
+Completed work / decisions / history	memory/YYYY-MM-DD.md
+Domain knowledge	memory/ breadcrumb file
+During normal sessions, I trigger this manually. I say the word, the agent runs the protocol, presents the plan, and waits for approval before writing anything.
+
+But here's the key: OpenClaw has a built-in feature called auto-compaction. When an agent nears its context window, OpenClaw compacts the conversation automatically. We injected the checkpoint protocol into that compaction prompt. So about 25,000 tokens before the context window fills up, checkpoint fires automatically. Nothing gets lost even if I forget to trigger it manually.
+
+Manual during sessions. Automatic before compaction. That's the safety net.
+
+trim
+This is your maintenance cycle. Think of it like cleaning and organizing your workspace so everything stays lean, efficient, and accessible.
+
+Over time, L1 files bloat. An agent runs daily, decisions pile up in MEMORY.md, old corrections stay in AGENTS.md long after they're relevant, TOOLS.md accumulates workarounds for bugs that got fixed weeks ago. When files get bloated, agents skim them. When agents skim, they miss instructions. Performance degrades and you don't know why.
+
+trim fixes this. The agent measures every L1 file, identifies anything over the 500-1,000 token budget, and moves excess down to L2 or L3. Completed work goes to daily notes. Project details beyond one line go to reference with a pointer left behind. Duplicates across files get resolved. Nothing gets deleted. Everything gets archived. The agent reports before/after token counts so you can see exactly what changed.
+
+How often: if you're running an agent daily, trim every week at minimum. Heavy usage might need it more often. The goal is to keep L1 and L2 organized, lean, and clean so the architecture stays efficient over time. Skip trim for a month and your carefully designed system starts working against you.
+
+recalibrate
+This is the drift correction. The longer you work with an agent, the more it drifts. It starts giving responses that don't match its SOUL.md. It ignores rules in AGENTS.md. It develops habits that no file supports. The drift is subtle. You don't notice it happening until the agent feels like a different agent.
+
+recalibrate forces the agent to stop and go back to its own files. It re-reads every L1 file word for word: SOUL.md, AGENTS.md, MEMORY.md, USER.md, TOOLS.md, IDENTITY.md, HEARTBEAT.md. Then it compares its recent behavior against what those files actually say.
+
+The agent comes back with a full report: here's where I drifted, here's what I was doing wrong, here's what my files actually say, and here's what I'm correcting. If there's no drift, it confirms with a specific example of aligned behavior from the current session. It can never just say "recalibrated" and move on.
+
+This is how you keep an agent aligned over weeks and months of continuous operation. Without it, the personality you designed in SOUL.md slowly becomes something you didn't design at all.
+
+checkboard
+Full board dump. All active projects grouped by status: active, pending, blocked, backlog. One line per item. Flags anything stale (no progress in 7+ days). One word for complete visibility.
+
+Write Discipline: The Rule That Changed Everything
+Most people building multi-agent systems focus on storage. Vector databases. Embeddings. Retrieval infrastructure. The technical layer matters. But it's not the hard part.
+
+The hard part is write discipline.
+
+The architecture only works if every agent writes to it honestly and reads from it consistently. Skip a checkpoint and that session's decisions are gone. Let L1 files bloat past budget and agents start skimming instead of reading. Stop writing breadcrumbs and L3 becomes invisible.
+
+Write before you move. That's the whole system in four words.
+
+What I'd Do Differently
+Start with ONE agent, ONE workspace. Get the memory system working for one before you scale. I tried building the whole system at once and almost quit in week two.
+
+Keep MEMORY.md ruthlessly short. Present tense. One line per item. Run trim regularly. The moment it becomes a journal, it loses its utility.
+
+Build breadcrumb files early. They're the bridge between quick recall and deep reference. Without them, your agent either knows nothing or loads everything.
+
+Never duplicate information across layers. One home per fact. Pointer in L1 replaces content. Breadcrumb in L2 replaces opening L3 blindly.
+
+Set up recover FIRST. It's the trigger you'll use the most and the one that makes the whole system feel alive.
+
+Inject checkpoint into your auto-compaction prompt. This is the safety net that makes the whole system robust. Manual checkpoints are discipline. Auto-compaction checkpoints are insurance.
+
+Results
+Context recovery went from "explain everything from scratch" to an agent running recover and coming back fully oriented in under two minutes. No re-explanation needed.
+
+Mistakes from forgotten context dropped to near zero. An agent that knows what happened yesterday doesn't repeat yesterday's errors.
+
+The real win: I started trusting my agents with bigger decisions. When memory works, delegation works. When delegation works, you stop being the bottleneck in your own operation.
+
+Running this in production daily on a real estate operation with OpenClaw. Happy to answer questions about the layers, the triggers, or the file structure.
+
+Reference: https://www.reddit.com/r/openclaw/comments/1rnku5b/i_built_a_3layer_memory_system_that_stopped_my/

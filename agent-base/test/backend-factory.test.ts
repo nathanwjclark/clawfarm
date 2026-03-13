@@ -14,12 +14,14 @@ const baseConfig: AgentBaseConfig = {
   workspaceDir: "/tmp/test",
   provider: "anthropic",
   model: "claude-sonnet-4-20250514",
+  modelParams: {},
   pricing: {
     inputPerMillion: 3,
     outputPerMillion: 15,
     cacheReadPerMillion: 0.3,
     cacheWritePerMillion: 3.75,
   },
+  evalUseLlmSuppliers: true,
   costCap: { perEvalRunUsd: 10, totalUsd: 100 },
   port: 0,
   contextTokensAvailable: 200_000,
@@ -44,6 +46,16 @@ describe("createMemoryBackend", () => {
     const backend = createMemoryBackend("five-day-1d", config);
     expect(backend).toBeInstanceOf(FiveDayBackend);
     expect(backend.dimensionality).toBe("1D");
+  });
+
+  it("creates FiveDayBackend for Cerebras-backed five-day variants", () => {
+    for (const variant of [
+      "five-day-1d-cerebras-glm47",
+    ]) {
+      const config = { ...baseConfig, memoryVariant: variant };
+      const backend = createMemoryBackend(variant, config);
+      expect(backend).toBeInstanceOf(FiveDayBackend);
+    }
   });
 
   it("throws for unimplemented variants", () => {

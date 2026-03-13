@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { parseConfig } from "./config.js";
 import { AgentProcess } from "./lifecycle/agent-process.js";
+import { resolveProviderApiKeyEnvVar } from "./provider-auth.js";
 
 /**
  * Load .env from the project root (clawfarm/) so the agent process
@@ -76,10 +77,11 @@ async function main() {
   // Ensure workspace dir exists
   await fs.mkdir(config.workspaceDir, { recursive: true });
 
-  // Warn if API key is missing (external evals like vending-bench need it)
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn("[runner] WARNING: ANTHROPIC_API_KEY is not set. External evals will fail.");
-    console.warn("[runner] Add ANTHROPIC_API_KEY=sk-ant-... to your .env file in the project root.");
+  // Warn if the configured provider key is missing.
+  const providerEnvVar = resolveProviderApiKeyEnvVar(config.provider);
+  if (providerEnvVar && !process.env[providerEnvVar]) {
+    console.warn(`[runner] WARNING: ${providerEnvVar} is not set. Agent LLM calls may fail.`);
+    console.warn(`[runner] Add ${providerEnvVar}=... to your .env file in the project root.`);
   }
 
   // Start agent process (HTTP server + monitoring + farm registration)

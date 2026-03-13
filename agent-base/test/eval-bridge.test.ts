@@ -18,12 +18,14 @@ function makeConfig(overrides: Partial<AgentBaseConfig> = {}): AgentBaseConfig {
     workspaceDir: "",
     provider: "anthropic",
     model: "claude-sonnet-4-20250514",
+    modelParams: {},
     pricing: {
       inputPerMillion: 3,
       outputPerMillion: 15,
       cacheReadPerMillion: 0.30,
       cacheWritePerMillion: 3.75,
     },
+    evalUseLlmSuppliers: true,
     costCap: { perEvalRunUsd: 10, totalUsd: 100 },
     port: 3900,
     contextTokensAvailable: 200_000,
@@ -256,6 +258,68 @@ describe("EvalBridge", () => {
     await expect(bridge.runEval(evalDef)).rejects.toThrow("An eval is already running");
 
     await firstRun;
+  });
+
+  it("attaches llmCallProfiles from PROFILE_CALLS to progress reports", async () => {
+    const { openclawDir, evalDir } = await setupPreflightEnv(tmpDir, "profile-calls-test");
+    const config = makeConfig({ workspaceDir: tmpDir, openclawDir, externalEvalDirs: [evalDir] });
+    const monitor = makeMockMonitor();
+    const reporter = makeMockReporter();
+    const chatHandler = makeMockChatHandler();
+    const backend = makeMockBackend();
+    const bridge = new EvalBridge(config, monitor, reporter, chatHandler, backend);
+
+    // Write script to a file to avoid shell escaping issues with $ signs
+    const scriptPath = path.join(evalDir, "run-test.sh");
+    const scriptLines = [
+      '#!/bin/bash',
+      'echo "Day 1/3 | Total Assets: \\$500"',
+      'echo "[PROFILE] day=1 turn=1 wall=5000 handler=5000 openclaw=5000 boot=100 llm=4000 tool=800"',
+      'echo \'[PROFILE_CALLS] day=1 [{"callIndex":0,"callType":"initial","totalMs":2500,"ttfcMs":800,"generationMs":1700,"usage":{"input":1000,"output":500},"toolCallsRequested":3},{"callIndex":1,"callType":"tool_followup","totalMs":1500,"ttfcMs":600,"generationMs":900,"usage":{"input":1500,"output":300},"toolCallsRequested":0}]\'',
+      'echo "Day 2/3 | Total Assets: \\$600"',
+      'echo "[PROFILE] day=2 turn=1 wall=3000 handler=3000 openclaw=3000 boot=50 llm=2500 tool=400"',
+      'echo \'[PROFILE_CALLS] day=2 [{"callIndex":0,"callType":"initial","totalMs":2500,"ttfcMs":700,"generationMs":1800,"usage":{"input":1200,"output":600},"toolCallsRequested":2}]\'',
+      'echo "Day 3/3 | Total Assets: \\$700"',
+      'echo "[PROFILE] day=3 turn=1 wall=4000 handler=4000 openclaw=4000 boot=80 llm=3000 tool=900"',
+      'echo \'[PROFILE_CALLS] day=3 [{"callIndex":0,"callType":"initial","totalMs":3000,"ttfcMs":900,"generationMs":2100,"usage":{"input":1300,"output":700},"toolCallsRequested":4}]\'',
+      'echo \'{"score":700}\' > "$1/run-001-transcript.json"',
+    ].join('\n');
+    await fs.writeFile(scriptPath, scriptLines, { mode: 0o755 });
+
+    const evalDef: ExternalEvalDefinition = {
+      id: "profile-calls-test",
+      name: "Profile Calls Test",
+      description: "test",
+      category: "simulation",
+      command: "bash",
+      args: [scriptPath, "{logDir}"],
+      defaultDays: 3,
+      maxScore: -1,
+      progressPattern: /Day (\d+)\/(\d+).*Total Assets: \$([0-9.,-]+)/,
+      resultExtractor: async (transcriptPath: string) => {
+        const raw = JSON.parse(await fs.readFile(transcriptPath, "utf-8"));
+        return { score: raw.score, maxScore: -1, taskResults: { totalAssets: raw.score }, costUsd: 0, durationMs: 0 };
+      },
+      agentMode: true,
+    };
+
+    await bridge.runEval(evalDef);
+
+    // Check that reportEvalProgress was called with turnProfile containing llmCallProfiles
+    const progressCalls = reporter.reportEvalProgress.mock.calls;
+    expect(progressCalls.length).toBeGreaterThanOrEqual(2); // at least days 1 and 2 (day 3 flushed on close)
+
+    // Find the call for day 1 — should have llmCallProfiles with 2 entries
+    const day1Call = progressCalls.find((c: any[]) => c[3]?.current === 1);
+    expect(day1Call).toBeDefined();
+    const day1Profile = day1Call![3].turnProfile;
+    expect(day1Profile).toBeDefined();
+    expect(day1Profile.llmApiMs).toBe(4000);
+    expect(day1Profile.llmCallProfiles).toBeDefined();
+    expect(day1Profile.llmCallProfiles).toHaveLength(2);
+    expect(day1Profile.llmCallProfiles[0].ttfcMs).toBe(800);
+    expect(day1Profile.llmCallProfiles[0].generationMs).toBe(1700);
+    expect(day1Profile.llmCallProfiles[1].callType).toBe("tool_followup");
   });
 
   describe("preflight", () => {

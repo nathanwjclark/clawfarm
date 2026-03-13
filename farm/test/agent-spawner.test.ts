@@ -4,12 +4,13 @@ import { discoverAgentConfigs, spawnAgent, getSpawnedAgents, killAllSpawnedAgent
 describe("Agent Spawner", () => {
   it("discovers agent configs from agent-base/configs/", () => {
     const configs = discoverAgentConfigs();
-    expect(configs.length).toBeGreaterThanOrEqual(3);
+    expect(configs.length).toBeGreaterThanOrEqual(4);
 
     const variantIds = configs.map((c) => c.variantId);
     expect(variantIds).toContain("native-0d");
     expect(variantIds).toContain("three-layer-1d");
     expect(variantIds).toContain("five-day-1d");
+    expect(variantIds).toContain("five-day-1d-cerebras-glm47");
 
     // Each config has required fields
     for (const c of configs) {

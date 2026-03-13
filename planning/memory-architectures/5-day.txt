@@ -1,0 +1,223 @@
+I Spent 5 Days Fixing My AI Agent's Memory. Here's Everything That Actually Worked.
+Guide & Tutorial
+I built an AI agent that runs on Telegram, handles support for two SaaS products, drafts tweets, manages invoices, and coordinates with my co-founder across timezones. Closest thing I have to a junior employee.
+
+For weeks, it kept forgetting everything.
+
+Not subtly. I'd spend an hour configuring a cron job, switch models, and the next session it would act like we'd never met. I'd reference a decision from two days ago and get a blank stare. I'd ask it to continue something and it'd start from scratch.
+
+So I stopped adding features and spent 5 days just fixing memory. Here's everything I found, broke, and eventually got working.
+
+Day 1: The agent forgets everything after long conversations
+
+The problem was simple to describe and painful to find.
+
+After long sessions, earlier context would just vanish. Not gradually. It'd just disappear. Things I said 20 messages ago, gone. Decisions from the start of the session, never happened.
+
+The culprit was compaction. When the conversation fills up the context window, OpenClaw compresses older messages into a summary to make room. The summary keeps the gist but drops specifics. Names, numbers, exact decisions. All gone.
+
+This is by design. The context window is finite. But the default behavior treats everything equally, so your carefully written instruction from message #3 gets the same treatment as casual small talk from message #7.
+
+What I did: enabled memory flush before compaction. This tells the agent to write important context to disk before the compressor runs.
+
+{
+  "compaction": {
+    "memoryFlush": {
+      "enabled": true,
+      "softThresholdTokens": 4000
+    }
+  }
+}
+When the session approaches the context limit, OpenClaw triggers a silent turn reminding the agent to save durable facts to memory/YYYY-MM-DD.md before compaction wipes them. The agent writes what matters, compaction runs, and the important stuff survives on disk even if the summary loses it.
+
+What I actually learned: compaction isn't the problem. Losing information during compaction is. If it's only in the context window, it's temporary. If it's on disk, it survives.
+
+Day 2: Search returns garbage
+
+With daily logs accumulating and MEMORY.md growing, I needed the agent to actually find things. Built-in memory search was returning irrelevant results or missing obvious matches.
+
+The issue was the search backend. OpenClaw's default SQLite search uses vector embeddings, semantic similarity, which works for broad queries but falls apart on exact matches. I'd search for a specific client name and get results about a completely different topic that happened to use similar language.
+
+What I did: switched to QMD as the memory search backend. QMD combines BM25 keyword matching with vector embeddings and a reranker. So when I search "Charles payment failure," it finds results containing those exact words AND semantically related results, then reranks by relevance.
+
+{
+  "memory": {
+    "qmd": {
+      "paths": [
+        {
+          "path": "/Users/ramya/clawd",
+          "name": "memory-root",
+          "pattern": "MEMORY.md"
+        },
+        {
+          "path": "/Users/ramya/clawd",
+          "name": "memory-alt",
+          "pattern": "memory_alt.md"
+        },
+        {
+          "path": "/Users/ramya/clawd/memory",
+          "name": "memory-dir",
+          "pattern": "**/*.md"
+        },
+        {
+          "path": "/Users/ramya/clawd/learnings",
+          "name": "learnings",
+          "pattern": "**/*.md"
+        }
+      ]
+    }
+  }
+}
+Pure semantic search sounds impressive but fails on proper nouns, specific numbers, and exact phrases. Hybrid search, keywords plus vectors plus reranking, is just better for real-world agent memory. If your agent can't find something you know is in the files, the search backend is usually the bottleneck, not the files themselves.
+
+Day 3: The agent finds it but doesn't use it
+
+Most frustrating day. Search was confirmed working. I could manually query and get the right results. But during actual conversations, the agent wouldn't retrieve relevant context even when it clearly existed.
+
+The problem: retrieval isn't automatic. The agent has to decide to search. And if the conversation doesn't trigger the right cues, it just won't look.
+
+What I did: added explicit retrieval instructions to the boot sequence. Instead of hoping the agent would search when needed, I just told it when to search:
+
+markdown
+
+Before starting any task:
+- Search daily logs for related context
+- Check LEARNINGS.md for rules about this type of task
+- If a client is mentioned, search for their history
+I also built a retrieval test. I'd plant a specific marker in the daily log, something like "MARKER: 2026-02-20 — Remember to always check git status before claiming code is pushed." New session, new conversation, ask: "What was the marker from yesterday?" If the agent found it, retrieval was working. If not, something was broken.
+
+There's a real difference between "the information exists" and "the agent uses the information." Search infrastructure handles the first part. Boot instructions handle the second. Test both separately.
+
+Day 4: Making it compaction-safe
+
+By now I had memory flush, hybrid search, and retrieval instructions. But I kept losing context in one specific scenario: very long sessions where compaction ran multiple times.
+
+Memory flush only triggers once per compaction cycle. If the session ran long enough for two or three compactions, only the first one got the flush treatment. Everything after that was at risk.
+
+What I did: configured context pruning to work alongside compaction:
+
+{
+  "contextPruning": {
+    "mode": "cache-ttl",
+    "ttl": "6h",
+    "keepLastAssistants": 3
+  }
+}
+This aggressively prunes old context after 6 hours while keeping the last 3 assistant responses. Combined with memory flush, the agent writes important stuff to disk early, and old context gets cleaned up before it overflows.
+
+I also added a MARKER test protocol: after any significant config change, plant a marker in the daily log and test retrieval across compaction boundaries. If the marker survives, the change worked.
+
+Long sessions are where memory systems actually get tested. Short conversations rarely hit compaction. It's the 2-hour deep work sessions where context disappears and you can't figure out why.
+
+Day 5: The system prompt was 28% bloated
+
+This was the day everything clicked. I ran /context detail and just stared at the numbers.
+
+11,887 tokens of system prompt before the agent even read my first message. 51 skills loaded, 20 of which I'd never used. MEMORY.md was 200 lines of company wiki loaded on every single session. Two competing boot sequences, one in BOOT.md (which OpenClaw doesn't even recognize) and one buried 200 lines deep in AGENTS.md.
+
+And every time I switched models, it forgot everything. No handover protocol, no write-back of current context. Just gone.
+
+The root cause: OpenClaw auto-reads these files on every new session. AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md, MEMORY.md. Everything else, LEARNINGS.md, daily logs, docs, reference files, the agent has to read those itself using tools. If the instruction to read those files isn't in one of the auto-loaded files (specifically AGENTS.md), the agent will never see them.
+
+My BOOT.md had the entire boot sequence. But OpenClaw doesn't auto-load BOOT.md. So the instructions just sat there, unread, doing nothing.
+
+What I did: a full audit and cleanup.
+
+Moved the boot sequence to the top of AGENTS.md. Deleted BOOT.md (not recognized by OpenClaw). Deleted BOOTSTRAP.md (one-time onboarding file, already completed, wasting 361 tokens every session). Slimmed MEMORY.md from 200 lines to 90 by moving reference docs to a docs/ folder. Removed 20 unused marketing skills eating 3,000 tokens per session.
+
+Then added three things that actually changed how the agent behaves.
+
+Boot sequence (top of AGENTS.md, not middle, not bottom, very top):
+
+markdown
+
+Before doing ANYTHING:
+1. Read USER.md
+2. Read learnings/LEARNINGS.md
+3. Read memory/YYYY-MM-DD.md (today + yesterday)
+4. Read MEMORY.md (main session only, never in groups)
+5. Read PROTOCOL_COST_EFFICIENCY.md
+6. Print: LOADED: USER | LEARNINGS | DAILY | MEMORY | PROTOCOL
+Write discipline because storing information means nothing if the agent doesn't write back:
+
+markdown
+
+After every task:
+1. Log decision + outcome → memory/YYYY-MM-DD.md
+2. If mistake → append to learnings/LEARNINGS.md
+3. If significant context → update MEMORY.md (only during heartbeat reviews, never directly during tasks)
+Handover protocol, the model-switch fix I should have built on day one:
+
+markdown
+
+Before session end or model switch:
+Write HANDOVER section to memory/YYYY-MM-DD.md:
+- What was discussed
+- What was decided
+- Pending tasks with exact details
+- Next steps remaining
+```
+
+Results: system prompt went from 11,887 to 8,529 tokens. Skills from 51 to 32. Session tokens from 18,280 to 14,627. 28% lighter, same agent, same models. Just less noise.
+
+---
+
+**The rules I wish I knew on day 1**
+
+**Only these files auto-load:** AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md, MEMORY.md. Everything else needs an explicit read instruction in AGENTS.md. BOOT.md is not a real thing in OpenClaw. I had one for weeks. It did nothing.
+
+**Boot sequence goes at the top of AGENTS.md.** Not the middle, not the bottom. The very top. Auto-loaded files get injected into the system prompt, so the boot instructions need to be the first thing the agent processes.
+
+**Write discipline matters more than read discipline.** Most people set up files for the agent to read but never enforce writing back. If the agent doesn't log decisions, outcomes, and mistakes to disk, those things only exist in the context window. And the context window gets compacted. Write-back is how temporary context becomes permanent memory.
+
+**Never write directly to MEMORY.md during tasks.** Daily logs are raw and append-only. MEMORY.md is curated long-term memory. If you let the agent dump anything into MEMORY.md, it bloats into a 200-line mess within weeks. Curate MEMORY.md during periodic reviews by distilling insights from recent daily logs.
+
+**LEARNINGS.md is the most underrated file.** Every mistake the agent makes should become a one-line rule. "Never claim code is pushed without checking git status." "Don't read full MEMORY.md in group chats." "Always confirm the user's timezone before scheduling." These compound. After a few weeks, your agent has a personal operations manual built from its own failures.
+
+**Test retrieval, not just storage.** Storing information and retrieving it are different problems. Plant markers, test across sessions, test across model switches. If the agent can't find what you stored yesterday, the storage doesn't matter.
+
+**The handover protocol is the model-switch fix.** OpenClaw agents lose all context when you switch models. Without a handover protocol that dumps current state to the daily log before the switch, the new model has no idea what was happening. This was my single biggest pain point for weeks.
+
+**Run /context detail regularly.** This command shows exactly what's eating your tokens. Skills you forgot you installed, files that grew without you noticing, tools you never use. I found 20 unused skills burning 3,000 tokens per session, on every single message, for features I'd never touched.
+
+**Hybrid search beats pure semantic search.** BM25 plus vectors plus reranking gives significantly better results than vectors alone. Client names, specific numbers, exact phrases, semantic search misses these. Keyword search catches them. Use both.
+
+**Compaction is not the enemy. Unwritten context is.** Make sure anything important gets written to a file before compaction runs. If it's on disk, it survives. If it's only in the conversation, it's at risk.
+
+---
+
+**Current workspace structure:**
+```
+workspace/
+├── AGENTS.md          (boot sequence + write discipline + handover protocol)
+├── SOUL.md            (personality and behavior)
+├── IDENTITY.md        (name, role)
+├── USER.md            (owner info)
+├── TOOLS.md           (tool usage guidelines)
+├── HEARTBEAT.md       (autonomous check-in behavior)
+├── MEMORY.md          (curated long-term memory, ~90 lines)
+├── PROTOCOL_COST_EFFICIENCY.md
+├── learnings/
+│   └── LEARNINGS.md   (rules from mistakes)
+├── memory/            (daily logs: YYYY-MM-DD.md)
+├── docs/
+│   ├── tweetsmash-arch.md
+│   ├── knowledge-transfer.md
+│   ├── infrastructure.md
+│   └── group-chat-rules.md
+└── skills/            (32 skills, down from 51)
+System prompt: 8,529 tokens. Session tokens: 14,627 out of 200,000 context window (7.3%).
+
+The agent boots, reads what it needs, writes what it learns, and hands off context before model switches. Took 5 days to get here. Most of it was unlearning the idea that more files equals better memory. It doesn't. Discipline does.
+
+
+Upvote
+90
+
+Downvote
+
+21
+Go to comments
+
+
+Full post: https://www.reddit.com/r/AskClaw/comments/1rci23e/i_spent_5_days_fixing_my_ai_agents_memory_heres/
